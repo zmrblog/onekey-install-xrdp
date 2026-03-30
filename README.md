@@ -5,3 +5,6 @@
 - **性能监控**：实时查看 CPU 负载、内存及 RDP 远程连接人数。
 - **系统清理**：自动回收系统日志（保留 1 天）、清理 APT 缓存及临时文件。
 - **运维工具**：支持一键修改 RDP 端口、开关及调整 Swap 虚拟内存。
+
+# 安装命令
+bash <(curl -l -s https://raw.githubusercontent.com/zmrblog/onekey-install-xrdp/refs/heads/main/install.sh)
