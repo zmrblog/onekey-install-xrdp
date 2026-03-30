@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =================================================================
-# 脚本名称:追梦人一键安装xfce4+xrdp脚本
+# 脚本名称: 追梦人一键安装xfce4+xrdp脚本
 # 适用系统: Ubuntu / Debian
 # 功能: 桌面环境部署 + Wine 深度兼容修复 + 系统监控 + 维护工具
 # =================================================================
@@ -9,38 +9,38 @@
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-黄色='\033[1;33m'
-蓝色=\033[0;34m
-NC=''\033[0m''
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-LOG_FILE=""/var/log/setup_pro_v4.log""
+LOG_FILE="/var/log/setup_pro_v4.log"
 
 # --- 基础工具函数 ---
 
 log() {
-    本地级别=1
-    本地消息=$2
-    本地时间戳=$(date +"%Y-%m-%d %H:%M:%S")
+    local level=$1
+    local msg=$2
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
     echo -e "${timestamp} [${level}] ${msg}" >> "${LOG_FILE}"
-    情况 $level 在
+    case $level in
         "INFO") echo -e "${BLUE}[INFO] ${msg}${NC}" ;;
-        "成功" echo -e "${GREEN}[OK] ${msg}${NC}" ;;
+        "SUCCESS") echo -e "${GREEN}[OK] ${msg}${NC}" ;;
         "WARN") echo -e "${YELLOW}[WARN] ${msg}${NC}" ;;
         "ERROR") echo -e "${RED}[ERROR] ${msg}${NC}" ;;
-    案例
+    esac
 }
 
-检查根用户() {
+check_root() {
     if [ "$EUID" -ne 0 ]; then
-        echo -e "错误: 请以 root 权限运行此脚本"
-        退出 1
-    输入：     fi
+        echo -e "${RED}错误: 请以 root 权限运行此脚本${NC}"
+        exit 1
+    fi
 }
 
 # --- 核心功能模块 ---
 
 # 1. 用户管理 (支持自定义用户名逻辑)
-创建用户逻辑() {
+create_user_logic() {
     local default_name="zmr$(date +%Y%m)"
     echo -e "\n${BLUE}--- 用户配置 ---${NC}"
     read -p "请输入要创建的用户名 (直接回车默认: $default_name): " input_name
