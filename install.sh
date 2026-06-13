@@ -106,12 +106,22 @@ pause() {
 # 安全执行命令
 safe_exec() {
     local desc="$1"; shift
+    local tmpfile
+    tmpfile="$(mktemp)"
     info "正在执行: $desc"
-    if "$@"; then
+    if "$@" &>"$tmpfile"; then
         success "$desc - 完成"
+        rm -f "$tmpfile"
         return 0
     else
         error "$desc - 失败"
+        # 显示最后 20 行错误输出，帮助定位问题
+        if [[ -s "$tmpfile" ]]; then
+            warn "--- 错误详情（最后20行）---"
+            tail -20 "$tmpfile" >&2
+            warn "--- 错误详情结束 ---"
+        fi
+        rm -f "$tmpfile"
         return 1
     fi
 }
@@ -868,6 +878,23 @@ install_desktop() {
             mark_component_installed "desktop" "${existing_de}"
             success "${existing_de} 已纳入本脚本管理（跳过安装）"
             return 0
+        fi
+    fi
+
+    # 检测系统上是否已有其他桌面环境（用户选了不同类型）
+    local other_de=""
+    dpkg -l xfce4 2>/dev/null | grep -q '^ii' && other_de="XFCE4"
+    [[ -z "$other_de" ]] && dpkg -l lxqt 2>/dev/null | grep -q '^ii' && other_de="LXQt"
+    [[ -z "$other_de" ]] && dpkg -l mate-desktop-environment 2>/dev/null | grep -q '^ii' && other_de="MATE"
+    [[ -z "$other_de" ]] && dpkg -l gnome-shell 2>/dev/null | grep -q '^ii' && other_de="GNOME"
+    [[ -z "$other_de" ]] && dpkg -l plasma-desktop 2>/dev/null | grep -q '^ii' && other_de="KDE Plasma"
+
+    if [[ -n "$other_de" && "$INTERACTIVE" == "true" ]]; then
+        warn "系统已安装 ${other_de}，但您选择了安装 ${desktop^^}"
+        warn "多个桌面环境共存可能导致冲突"
+        if ! confirm "是否继续安装 ${desktop^^}?" "n"; then
+            info "已取消安装，${other_de} 将继续使用"
+            return 1
         fi
     fi
 
