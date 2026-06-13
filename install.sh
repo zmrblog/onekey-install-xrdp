@@ -331,7 +331,7 @@ _dpkg_component_check() {
 }
 
 get_installed_components() {
-    # 优先从状态文件读取
+    # 状态文件存在时以其为准，不回退到 dpkg（避免检测到其他脚本安装的组件）
     if [[ -f "$STATE_FILE" ]] && command -v python3 &>/dev/null; then
         local result
         result="$(_PY_STATE_FILE="$STATE_FILE" python3 -c "
@@ -343,13 +343,11 @@ try:
 except:
     pass
 " 2>/dev/null)"
-        if [[ -n "$result" ]]; then
-            echo "$result"
-            return 0
-        fi
+        echo "$result"
+        return 0
     fi
 
-    # 回退：通过 dpkg 检测系统实际安装的组件
+    # 无状态文件时回退：通过 dpkg 检测系统实际安装的组件
     local desktop_detected=false
     local entry pkg
     for entry in $_COMPONENT_DPKG_MAP; do
@@ -391,7 +389,7 @@ except:
 is_component_installed() {
     local component="$1"
 
-    # 先查状态文件
+    # 状态文件存在时以其为准，不回退到 dpkg（避免检测到其他脚本安装的组件）
     if [[ -f "$STATE_FILE" ]] && command -v python3 &>/dev/null; then
         if _PY_STATE_FILE="$STATE_FILE" _PY_COMP="$component" python3 -c "
 import json, os, sys
@@ -401,10 +399,13 @@ if os.environ['_PY_COMP'] in data.get('components', {}):
 sys.exit(1)
 " 2>/dev/null; then
             return 0
+        else
+            # 状态文件存在但组件不在其中，视为未安装
+            return 1
         fi
     fi
 
-    # 回退：dpkg 检测
+    # 无状态文件时回退：dpkg 检测
     if _dpkg_component_check "$component"; then
         return 0
     fi
@@ -1942,7 +1943,7 @@ uninstall_component() {
             _uninstall_single "$comp"
         done
 
-        rm -rf "$STATE_DIR" 2>/dev/null || true
+        # 保留状态文件（记录卸载状态），避免 dpkg 回退检测到其他脚本安装的组件
         success "所有组件已卸载"
         return 0
     fi
