@@ -715,6 +715,86 @@ run_prescan() {
 }
 
 # =============================================================================
+# 1.5 国内镜像源切换
+# =============================================================================
+
+generate_sources_list() {
+    local mirror="$1"
+    local codename="$2"
+    local id="$3"
+
+    if [[ "$id" == "ubuntu" ]]; then
+        cat <<EOF
+deb http://${mirror}/ubuntu/ ${codename} main restricted universe multiverse
+deb http://${mirror}/ubuntu/ ${codename}-updates main restricted universe multiverse
+deb http://${mirror}/ubuntu/ ${codename}-security main restricted universe multiverse
+deb http://${mirror}/ubuntu/ ${codename}-backports main restricted universe multiverse
+EOF
+    else
+        # debian
+        cat <<EOF
+deb http://${mirror}/debian/ ${codename} main contrib non-free non-free-firmware
+deb http://${mirror}/debian-security/ ${codename}-security main contrib non-free non-free-firmware
+deb http://${mirror}/debian/ ${codename}-updates main contrib non-free non-free-firmware
+EOF
+    fi
+}
+
+test_mirror() {
+    local mirror="$1"
+    local url
+    if [[ "$OS_ID" == "ubuntu" ]]; then
+        url="http://${mirror}/ubuntu/dists/${OS_CODENAME}/InRelease"
+    else
+        url="http://${mirror}/debian/dists/${OS_CODENAME}/InRelease"
+    fi
+    wget -q --timeout=5 --tries=1 "$url" -O /dev/null 2>/dev/null
+}
+
+switch_to_china_mirror() {
+    warn "检测到 apt 源不可用或速度过慢，尝试切换到国内镜像..."
+
+    local mirrors=(
+        "mirrors.aliyun.com"
+        "mirrors.ustc.edu.cn"
+        "mirrors.tuna.tsinghua.edu.cn"
+    )
+    local best_mirror=""
+
+    for mirror in "${mirrors[@]}"; do
+        info "测试镜像: $mirror ..."
+        if test_mirror "$mirror"; then
+            best_mirror="$mirror"
+            success "镜像 $mirror 可用"
+            break
+        fi
+    done
+
+    if [[ -z "$best_mirror" ]]; then
+        error "所有国内镜像均不可用，请检查网络连接"
+        return 1
+    fi
+
+    # 备份原 sources.list
+    if [[ ! -f /etc/apt/sources.list.bak ]]; then
+        cp /etc/apt/sources.list /etc/apt/sources.list.bak
+        info "已备份原 sources.list 到 sources.list.bak"
+    fi
+
+    generate_sources_list "$best_mirror" "$OS_CODENAME" "$OS_ID" > /etc/apt/sources.list
+    success "已切换至国内镜像: $best_mirror"
+
+    # 清理并重新更新
+    apt-get clean
+    if ! apt-get update; then
+        error "切换镜像后 apt update 仍失败"
+        return 1
+    fi
+    success "apt update 成功"
+    return 0
+}
+
+# =============================================================================
 # 2. 安装模块
 # =============================================================================
 
@@ -738,8 +818,11 @@ ensure_prerequisites() {
 
     # 更新包列表
     if ! safe_exec "更新软件包列表" apt-get update; then
-        error "apt update 失败，请检查网络和软件源配置"
-        return 1
+        warn "apt update 失败，尝试切换国内镜像源..."
+        if ! switch_to_china_mirror; then
+            error "apt update 失败且无法切换至可用镜像，请检查网络连接"
+            return 1
+        fi
     fi
 
     return 0
@@ -2040,10 +2123,48 @@ uninstall_component() {
     _uninstall_single "$component"
 }
 
+# 彻底清理指定桌面家族的包和残留配置
+purge_desktop_family() {
+    local family_name="$1"
+    local pattern="$2"
+
+    info "正在清理 ${family_name} 相关包..."
+
+    # 1. 卸载 metapackage（标记依赖为可自动移除）
+    apt-get purge -y ${3:-} 2>/dev/null || true
+
+    # 2. 清理已标记为自动安装且不再需要的包
+    apt-get autoremove --purge -y 2>/dev/null || true
+
+    # 3. 查找并卸载仍残留的该家族包（可能被标记为手动安装）
+    local residual
+    residual="$(dpkg -l 2>/dev/null | grep '^ii' | awk '{print $2}' | grep -E "$pattern" || true)"
+    if [[ -n "$residual" ]]; then
+        warn "发现残留的 ${family_name} 包，继续清理..."
+        # 先标记为自动安装，然后通过 autoremove 清理（更干净）
+        echo "$residual" | xargs -r apt-mark auto 2>/dev/null || true
+        apt-get autoremove --purge -y 2>/dev/null || true
+        # 如果还有残留，直接 purge
+        residual="$(dpkg -l 2>/dev/null | grep '^ii' | awk '{print $2}' | grep -E "$pattern" || true)"
+        if [[ -n "$residual" ]]; then
+            echo "$residual" | xargs -r apt-get purge -y 2>/dev/null || true
+        fi
+    fi
+}
+
 _uninstall_single() {
     local component="$1"
 
-    if ! is_component_installed "$component"; then
+    # 桌面环境特殊处理：检测系统上是否实际有桌面包
+    if [[ "$component" == "desktop" ]]; then
+        local has_desktop=false
+        dpkg -l xfce4 lxqt mate-desktop-environment gnome-shell plasma-desktop lxde-core 2>/dev/null | grep -q '^ii' && has_desktop=true
+
+        if [[ "$has_desktop" == "false" ]] && ! is_component_installed "desktop"; then
+            info "组件 desktop 未安装，跳过"
+            return 0
+        fi
+    elif ! is_component_installed "$component"; then
         info "组件 $component 未安装，跳过"
         return 0
     fi
@@ -2053,15 +2174,25 @@ _uninstall_single() {
 
     case "$component" in
         desktop)
-            # 精确移除已安装的桌面组件，不影响其他桌面
-            apt-get purge -y xfce4 xfce4-goodies xubuntu-desktop 2>/dev/null || true
-            apt-get purge -y lxqt lxqt-core 2>/dev/null || true
-            apt-get purge -y mate-desktop-environment mate-desktop-environment-extras 2>/dev/null || true
-            # 不移除 lightdm/sddm 如果有其他桌面可能在用
-            if ! dpkg -l gnome-shell plasma-desktop lxde-core 2>/dev/null | grep -q '^ii'; then
+            # 彻底清理所有桌面环境类型（包括其他脚本安装的）
+            purge_desktop_family "XFCE4" "^xfce4|^xubuntu|^thunar|^xfwm4|^xfdesktop4|^tumbler|^mousepad|^ristretto|^parole|^exo-|^garcon|^libxfce4" "xfce4 xfce4-goodies xubuntu-desktop"
+            purge_desktop_family "LXQt" "^lxqt|^sddm" "lxqt lxqt-core"
+            purge_desktop_family "MATE" "^mate-|^caja|^marco|^pluma|^atril|^engrampa|^eom" "mate-desktop-environment mate-desktop-environment-extras"
+            purge_desktop_family "GNOME" "^gnome-|^nautilus|^mutter|^shell" "gnome-shell"
+            purge_desktop_family "KDE" "^plasma-|^kde-|^kwin|^dolphin|^konsole" "plasma-desktop"
+            purge_desktop_family "LXDE" "^lxde-|^openbox|^pcmanfm" "lxde-core"
+
+            # 清理显示管理器（如果没有其他桌面了）
+            if ! dpkg -l gnome-shell plasma-desktop lxde-core xfce4 lxqt mate-desktop-environment 2>/dev/null | grep -q '^ii'; then
                 apt-get purge -y lightdm lightdm-gtk-greeter sddm 2>/dev/null || true
             fi
-            info "桌面环境已卸载（display manager 保留以防其他桌面依赖）"
+
+            # 清理残留的系统级配置目录
+            rm -rf /etc/xdg/xfce4 /etc/xdg/menus/xfce* /usr/share/xfce4 2>/dev/null || true
+            rm -rf /etc/xdg/lxqt /usr/share/lxqt 2>/dev/null || true
+            rm -rf /etc/xdg/mate /usr/share/mate 2>/dev/null || true
+
+            info "桌面环境已彻底卸载（用户家目录下的个人配置已保留）"
             ;;
 
         xrdp)
