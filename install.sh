@@ -833,6 +833,44 @@ install_desktop() {
         fi
     fi
 
+    # 检测系统上是否已有对应桌面环境（可能由其他脚本安装）
+    local existing_de=""
+    case "$desktop" in
+        lxqt)  dpkg -l lxqt 2>/dev/null | grep -q '^ii' && existing_de="LXQt" ;;
+        mate)  dpkg -l mate-desktop-environment 2>/dev/null | grep -q '^ii' && existing_de="MATE" ;;
+        *)     dpkg -l xfce4 2>/dev/null | grep -q '^ii' && existing_de="XFCE4" ;;
+    esac
+
+    if [[ -n "$existing_de" ]]; then
+        info "检测到系统已安装 ${existing_de} 桌面环境"
+        if [[ "$INTERACTIVE" == "true" ]]; then
+            if ! confirm "是否跳过安装，直接纳入本脚本管理?" "y"; then
+                info "将重新安装/修复桌面环境"
+            else
+                # 纳入状态管理，确保显示管理器也已安装
+                local dm_pkg=""
+                case "$desktop" in
+                    lxqt) dm_pkg="sddm" ;;
+                    *)    dm_pkg="lightdm" ;;
+                esac
+                if ! dpkg -l "$dm_pkg" 2>/dev/null | grep -q '^ii'; then
+                    info "安装显示管理器 $dm_pkg ..."
+                    apt-get install -y "$dm_pkg" 2>/dev/null || true
+                fi
+                DESKTOP_CHOICE="$desktop"
+                mark_component_installed "desktop" "${existing_de}"
+                success "${existing_de} 已纳入本脚本管理"
+                return 0
+            fi
+        else
+            # 非交互模式：已有桌面直接纳入管理
+            DESKTOP_CHOICE="$desktop"
+            mark_component_installed "desktop" "${existing_de}"
+            success "${existing_de} 已纳入本脚本管理（跳过安装）"
+            return 0
+        fi
+    fi
+
     info "安装 ${desktop} 桌面环境..."
 
     local pkgs=()
@@ -899,6 +937,30 @@ install_xrdp() {
                 info "跳过 XRDP 安装"
                 return 0
             fi
+        fi
+    fi
+
+    # 检测系统上是否已有 XRDP（可能由其他脚本安装）
+    if dpkg -l xrdp 2>/dev/null | grep -q '^ii'; then
+        info "检测到系统已安装 XRDP"
+        if [[ "$INTERACTIVE" == "true" ]]; then
+            if ! confirm "是否跳过安装，直接纳入本脚本管理?" "y"; then
+                info "将重新安装/修复 XRDP"
+            else
+                configure_xrdp_ini
+                inject_xrdp_locale "$DESKTOP_CHOICE"
+                fix_startwm
+                mark_component_installed "xrdp" "xrdp xorgxrdp"
+                success "XRDP 已纳入本脚本管理"
+                return 0
+            fi
+        else
+            configure_xrdp_ini
+            inject_xrdp_locale "$DESKTOP_CHOICE"
+            fix_startwm
+            mark_component_installed "xrdp" "xrdp xorgxrdp"
+            success "XRDP 已纳入本脚本管理（跳过安装）"
+            return 0
         fi
     fi
 
