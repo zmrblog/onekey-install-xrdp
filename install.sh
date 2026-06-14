@@ -40,6 +40,8 @@ ARCH=""               # 架构: x86_64 / aarch64
 INTERACTIVE=true      # 是否交互模式
 DESKTOP_CHOICE="xfce4"  # 桌面选择: xfce4 / lxqt / mate
 XRDP_PORT=3389          # XRDP 监听端口（如冲突则自动调整）
+IS_FNOS=false           # 是否为飞牛 NAS 系统
+LOCK_DIR=""             # 锁目录（由 acquire_lock 设置）
 
 # =============================================================================
 # 0.1 日志与输出工具
@@ -118,7 +120,10 @@ safe_exec() {
         # 显示最后 20 行错误输出，帮助定位问题
         if [[ -s "$tmpfile" ]]; then
             warn "--- 错误详情（最后20行）---"
-            tail -20 "$tmpfile" >&2
+            # 逐行通过 warn 输出，确保错误内容写入 LOG_FILE（不要直接 >&2，会绕过日志记录）
+            tail -20 "$tmpfile" | while IFS= read -r line; do
+                warn "$line"
+            done
             warn "--- 错误详情结束 ---"
         fi
         rm -f "$tmpfile"
@@ -437,23 +442,23 @@ sys.exit(1)
 # =============================================================================
 
 acquire_lock() {
-    local lock_dir="${LOCK_FILE}.dir"
-    if ! mkdir "$lock_dir" 2>/dev/null; then
+    LOCK_DIR="${LOCK_FILE}.dir"
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
         local pid
-        pid="$(cat "${lock_dir}/pid" 2>/dev/null)"
+        pid="$(cat "${LOCK_DIR}/pid" 2>/dev/null)"
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
             error "脚本已在运行中 (PID: $pid)"
             return 1
         fi
         # 过期锁，清理后重试
-        rm -rf "$lock_dir"
-        if ! mkdir "$lock_dir" 2>/dev/null; then
+        rm -rf "$LOCK_DIR"
+        if ! mkdir "$LOCK_DIR" 2>/dev/null; then
             error "无法获取锁"
             return 1
         fi
     fi
-    echo $$ > "${lock_dir}/pid"
-    trap 'rm -rf "$lock_dir"' EXIT INT TERM
+    echo $$ > "${LOCK_DIR}/pid"
+    trap 'rm -rf "${LOCK_FILE}.dir" 2>/dev/null' EXIT INT TERM
     return 0
 }
 
@@ -689,6 +694,10 @@ run_prescan() {
     scan_existing_xrdp
     scan_display_manager
 
+    # 飞牛 NAS 额外扫描
+    detect_fnos
+    scan_fnos_issues
+
     hr
     echo -e "扫描结果: ${GREEN}通过 $SCAN_PASS${NC}  ${YELLOW}警告 $SCAN_WARN${NC}  ${RED}失败 $SCAN_FAIL${NC}"
     hr
@@ -702,7 +711,7 @@ run_prescan() {
     if [[ "$SCAN_WARN" -gt 0 ]]; then
         warn "存在 $SCAN_WARN 项警告，建议确认后再继续。"
         if [[ "$INTERACTIVE" == "true" ]]; then
-            if ! confirm "是否继续安装?" "n"; then
+            if ! confirm "是否继续安装?" "y"; then
                 info "已取消安装"
                 return 1
             fi
@@ -800,8 +809,32 @@ switch_to_china_mirror() {
 
 # --- 2.1 基础前提 ---
 
+# DNS 预检：测试能否解析镜像域名（飞牛 NAS 常见网关 DNS 未开启转发）
+check_dns() {
+    getent hosts mirrors.aliyun.com &>/dev/null || \
+    getent hosts deb.debian.org &>/dev/null || \
+    getent hosts mirrors.ustc.edu.cn &>/dev/null
+}
+
 ensure_prerequisites() {
     info "检查基础依赖..."
+
+    # DNS 预检：避免 DNS 解析失败导致 apt-get update 长时间卡死
+    if ! check_dns; then
+        error "DNS 解析失败，apt update 将无法工作"
+        echo ""
+        echo -e "${YELLOW}  常见原因：网关/路由器 DNS 未开启转发（飞牛 NAS 常见）${NC}"
+        echo -e "${YELLOW}  临时修复（复制以下命令到终端执行）：${NC}"
+        echo ""
+        echo "    cp /etc/resolv.conf /etc/resolv.conf.bak"
+        echo "    cat > /etc/resolv.conf << 'EOF'"
+        echo "    nameserver 223.5.5.5"
+        echo "    nameserver 8.8.8.8"
+        echo "    nameserver 119.29.29.29"
+        echo "    EOF"
+        echo ""
+        return 1
+    fi
 
     # 确保 sudo 存在
     if ! command -v sudo &>/dev/null; then
@@ -816,8 +849,8 @@ ensure_prerequisites() {
         fi
     done
 
-    # 更新包列表
-    if ! safe_exec "更新软件包列表" apt-get update; then
+    # 更新包列表（加 300s 超时，避免镜像不通时无限挂起）
+    if ! safe_exec "更新软件包列表" timeout 300 apt-get update; then
         warn "apt update 失败，尝试切换国内镜像源..."
         if ! switch_to_china_mirror; then
             error "apt update 失败且无法切换至可用镜像，请检查网络连接"
@@ -826,6 +859,286 @@ ensure_prerequisites() {
     fi
 
     return 0
+}
+
+# --- 2.1.5 trim 源 avahi 冲突处理（飞牛 NAS 常见） ---
+
+# 检测 trim 源（飞牛 NAS 自带）造成的 libavahi 包污染
+# 现象: libavahi-common3 装了 trim 修改版（带 +trim-1 后缀和 2: epoch）
+#       与 debian 标准的 libavahi-glib1 版本号不匹配
+# 影响: 任何依赖 libavahi-glib1 的包（gvfs-backends -> mate-desktop-environment-core 等）都装不上
+check_trim_avahi_conflict() {
+    local installed_ver
+    installed_ver="$(dpkg-query -W -f='${Version}' libavahi-common3 2>/dev/null || true)"
+
+    # 未安装或非 trim 版本，无需处理
+    if [[ -z "$installed_ver" || "$installed_ver" != *"+trim"* ]]; then
+        return 0
+    fi
+
+    warn "检测到 trim 源修改版 libavahi-common3 (${installed_ver})"
+    warn "这会导致 libavahi-glib1 装不上，进而阻断 mate/xfce/lxqt 等桌面环境"
+    warn "正在降级 trim 源的 avahi 包到 debian 标准版本..."
+
+    # 用 apt pin 覆盖 trim 源（repo.fnnas.com）对 avahi 包的优先级
+    local pin_file="/etc/apt/preferences.d/zz-trim-avahi-downgrade.pref"
+    local pin_content
+    pin_content="$(cat <<'EOF'
+# 由 rdp-setup 脚本自动生成：覆盖飞牛 NAS trim 源对 avahi 包的优先级
+# 原因: trim 源修改版（带 +trim-1 后缀）与 debian 标准的 libavahi-glib1 版本号不匹配
+#       导致 mate/xfce/lxqt 等桌面环境无法安装
+# 解决: 强制从 debian 官方源安装标准版
+Package: libavahi-common3 libavahi-common-data libavahi-client3 libavahi-core7 libavahi-glib1 avahi-daemon avahi-utils
+Pin: origin repo.fnnas.com
+Pin-Priority: 100
+EOF
+)"
+    if ! echo "$pin_content" > "$pin_file"; then
+        warn "无法写入 $pin_file，请检查权限"
+        return 1
+    fi
+
+    apt-get update -qq
+
+    # 关键：必须指定具体版本号降级到 debian 标准版
+    # 原因: trim 源的 avahi 包使用 2: epoch（带 +trim-1 后缀），apt 默认选择版本号"更高"的 trim 版
+    #       仅用 --allow-downgrades 仍会选 trim 版，必须显式指定不带 epoch 的 debian 标准版
+    # 动态从 apt 缓存中获取 debian 标准版版本号（不带 +trim 后缀的）
+    local debian_ver
+    debian_ver="$(apt-cache madison libavahi-common3 2>/dev/null | grep -v 'trim' | awk '{print $3}' | head -1)"
+    if [[ -z "$debian_ver" ]]; then
+        warn "无法从 apt 缓存中获取 debian 标准版 avahi 版本号，请检查 apt 源"
+        return 1
+    fi
+
+    if ! safe_exec "降级 trim avahi 包到 debian 标准版 (${debian_ver})" \
+        apt-get install -y --allow-downgrades \
+            "libavahi-common3=${debian_ver}" \
+            "libavahi-common-data=${debian_ver}" \
+            "libavahi-client3=${debian_ver}" \
+            "libavahi-core7=${debian_ver}" \
+            "avahi-daemon=${debian_ver}" \
+            "avahi-utils=${debian_ver}" \
+            "libavahi-glib1=${debian_ver}"; then
+        warn "avahi 降级失败，桌面环境可能仍无法安装"
+        return 1
+    fi
+
+    success "trim avahi 包已降级到 debian 标准版 (${debian_ver})"
+    return 0
+}
+
+# --- 2.1.6 飞牛 NAS 系统适配 ---
+
+# 检测是否为飞牛 NAS 系统
+detect_fnos() {
+    # 飞牛 NAS 的特征：存在 /usr/trim 或 /opt/trim 目录，或 trim_main 服务
+    if [[ -d /usr/trim ]] || [[ -d /opt/trim ]] || systemctl is-active --quiet trim_main 2>/dev/null; then
+        IS_FNOS=true
+        return 0
+    fi
+    IS_FNOS=false
+    return 1
+}
+
+# 飞牛预扫描：检测 dpkg 半配置包、liveupdate 损坏、initramfs 风险
+scan_fnos_issues() {
+    if [[ "$IS_FNOS" != "true" ]]; then
+        return 0
+    fi
+
+    info "检测到飞牛 NAS 系统，执行额外预扫描..."
+
+    # 检查 dpkg 半配置包
+    local half_configured
+    half_configured="$(dpkg --audit 2>&1 | grep -c "尚未配置\|等待.*触发器\|缺少列表控制文件")" || true
+    if [[ "$half_configured" -gt 0 ]]; then
+        scan_record "飞牛 dpkg 状态" warn "存在 ${half_configured} 个半配置/待触发包，安装前将自动修复"
+    else
+        scan_record "飞牛 dpkg 状态" pass
+    fi
+
+    # 检查 liveupdate 包是否损坏
+    if dpkg -l liveupdate 2>/dev/null | grep -q "^i[^i]"; then
+        scan_record "飞牛 liveupdate 包" warn "liveupdate 包状态异常，安装前将自动清理"
+    else
+        scan_record "飞牛 liveupdate 包" pass
+    fi
+
+    # 检查 update-initramfs 是否正常
+    if [[ -x /usr/sbin/update-initramfs ]]; then
+        scan_record "飞牛 initramfs" pass
+    else
+        scan_record "飞牛 initramfs" warn "update-initramfs 异常，安装前将自动修复"
+    fi
+}
+
+# 飞牛安装前修复：修复 dpkg 半配置包、清理 liveupdate、保护 initramfs
+fnos_pre_install_fix() {
+    if [[ "$IS_FNOS" != "true" ]]; then
+        return 0
+    fi
+
+    info "飞牛 NAS 检测：执行安装前修复..."
+
+    # 1. 清理 liveupdate 损坏的 dpkg 元数据
+    if dpkg -l liveupdate 2>/dev/null | grep -q "^i[^i]"; then
+        info "清理损坏的 liveupdate dpkg 元数据..."
+        dpkg --remove --force-remove-reinstreq liveupdate &>/dev/null || true
+        success "liveupdate 元数据已清理（/usr/trim/bin/liveupdate 二进制不受影响）"
+    fi
+
+    # 2. 修复 dpkg 半配置包
+    local audit_count
+    audit_count="$(dpkg --audit 2>&1 | grep -c "尚未配置\|等待.*触发器\|缺少列表控制文件")" || true
+    if [[ "$audit_count" -gt 0 ]]; then
+        info "修复 ${audit_count} 个半配置/待触发包..."
+
+        # 先处理触发器
+        dpkg --triggers-only --pending &>/dev/null || true
+
+        # 临时禁用 update-initramfs（飞牛的 initramfs 更新经常因 /boot 问题崩溃）
+        local initramfs_backed_up=false
+        if [[ -x /usr/sbin/update-initramfs ]] && ! head -2 /usr/sbin/update-initramfs | grep -q "临时禁用"; then
+            cp /usr/sbin/update-initramfs /usr/sbin/update-initramfs.rdp-backup
+            cat > /usr/sbin/update-initramfs << 'INITEOF'
+#!/bin/bash
+# [rdp-setup 临时禁用] 飞牛 NAS 的 initramfs 更新可能导致 dpkg 崩溃
+# 安装完成后会自动恢复
+echo "[rdp-setup] update-initramfs 已临时跳过" >&2
+exit 0
+INITEOF
+            chmod +x /usr/sbin/update-initramfs
+            initramfs_backed_up=true
+            info "已临时禁用 update-initramfs（安装完成后自动恢复）"
+        fi
+
+        # 执行配置修复
+        dpkg --configure -a &>/dev/null || true
+        apt-get install -f -y &>/dev/null || true
+
+        # 恢复 update-initramfs
+        if [[ "$initramfs_backed_up" == "true" ]] && [[ -f /usr/sbin/update-initramfs.rdp-backup ]]; then
+            cp /usr/sbin/update-initramfs.rdp-backup /usr/sbin/update-initramfs
+            rm -f /usr/sbin/update-initramfs.rdp-backup
+            success "update-initramfs 已恢复"
+        fi
+
+        # 验证修复结果
+        local remaining
+        remaining="$(dpkg --audit 2>&1 | grep -c "尚未配置\|等待.*触发器\|缺少列表控制文件")" || true
+        if [[ "$remaining" -eq 0 ]]; then
+            success "dpkg 半配置包已全部修复"
+        else
+            warn "仍有 ${remaining} 个包未修复，可能影响后续安装"
+        fi
+    fi
+}
+
+# 飞牛安装后保护：部署 ufw 端口保护和 trim 更新看门狗
+fnos_post_install_protect() {
+    if [[ "$IS_FNOS" != "true" ]]; then
+        return 0
+    fi
+
+    info "飞牛 NAS 检测：部署系统保护..."
+
+    # 1. 部署 ufw 端口保护（防止 trim 更新重置 ufw 规则）
+    local ufw_protect="/usr/local/bin/ufw-protect.sh"
+    if [[ ! -f "$ufw_protect" ]]; then
+        cat > "$ufw_protect" << 'UFWEOF'
+#!/bin/bash
+# 保护飞牛 Web 端口在 ufw 中不被 trim 自动更新覆盖
+# 由 rdp-setup 脚本自动部署
+
+REQUIRED_PORTS=(80 443 19890 8000 3389)
+MISSING=0
+
+for port in "${REQUIRED_PORTS[@]}"; do
+    if ! ufw status 2>/dev/null | grep -qE "^\s*${port}/tcp"; then
+        echo "[$(date '+%F %T')] [ufw-protect] 缺失 ${port}/tcp，正在添加"
+        ufw allow ${port}/tcp comment "fnos-web-auto" 2>&1
+        MISSING=1
+    fi
+done
+
+if [[ $MISSING -eq 1 ]]; then
+    ufw reload
+    logger "ufw-protect: 已补齐缺失的飞牛 Web 端口规则"
+fi
+UFWEOF
+        chmod +x "$ufw_protect"
+        success "已部署 ufw-protect.sh（含 3389 远程桌面端口）"
+    else
+        # 确保已有脚本包含 3389 端口
+        if ! grep -q "3389" "$ufw_protect"; then
+            sed -i 's/REQUIRED_PORTS=(\(.*\))/REQUIRED_PORTS=(\1 3389)/' "$ufw_protect"
+            success "ufw-protect.sh 已添加 3389 端口保护"
+        fi
+    fi
+
+    # 部署 ufw-protect cron（每 5 分钟）
+    local ufw_cron="/etc/cron.d/ufw-protect"
+    if [[ ! -f "$ufw_cron" ]]; then
+        echo "*/5 * * * * root /usr/local/bin/ufw-protect.sh >> /var/log/ufw-protect.log 2>&1" > "$ufw_cron"
+        success "已部署 ufw-protect 定时任务（每 5 分钟检查）"
+    fi
+
+    # 2. 部署 trim 更新看门狗
+    local guard_script="/usr/local/bin/trim-update-guard.sh"
+    if [[ ! -f "$guard_script" ]]; then
+        cat > "$guard_script" << 'GUARDEOF'
+#!/bin/bash
+# /usr/local/bin/trim-update-guard.sh
+# 监控 trim 自动更新行为，防止更新失败导致系统假死
+# 由 rdp-setup 脚本自动部署
+
+LOG="/var/log/trim-update-guard.log"
+GUARD_FILE="/tmp/trim_update_guarded"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"
+}
+
+# 1. 检查 liveupdate 进程（精确匹配路径，避免误匹配）
+LIVEUPDATE_PID=$(pgrep -xf "/usr/trim/bin/liveupdate" 2>/dev/null | head -1)
+if [ -n "$LIVEUPDATE_PID" ]; then
+    log "[警告] liveupdate 进程运行中 PID=$LIVEUPDATE_PID"
+
+    if [ -f "$GUARD_FILE" ]; then
+        log "[阻止] 上次更新失败，禁止再次自动更新。停止 liveupdate"
+        kill -9 "$LIVEUPDATE_PID" 2>/dev/null
+    else
+        log "[提示] 首次检测到 liveupdate 启动，记录 guard 文件"
+        touch "$GUARD_FILE"
+    fi
+fi
+
+# 2. 检查 trim 进程是否要关机（精确匹配路径）
+SHUTDOWN_PID=$(pgrep -xf "/usr/trim/bin/system_shutdown.sh" 2>/dev/null | head -1)
+if [ -n "$SHUTDOWN_PID" ]; then
+    log "[警告] trim 正在执行自动关机 PID=$SHUTDOWN_PID"
+
+    if [ ! -f "$GUARD_FILE" ]; then
+        touch "$GUARD_FILE"
+        log "[提示] 标记为首次更新，允许执行"
+    else
+        log "[阻止] 上次更新失败过，本次也阻止自动关机"
+        kill -STOP "$SHUTDOWN_PID" 2>/dev/null
+    fi
+fi
+GUARDEOF
+        chmod +x "$guard_script"
+        success "已部署 trim-update-guard.sh（防止 trim 更新导致假死）"
+    fi
+
+    # 部署看门狗 cron（每分钟）
+    local guard_cron="/etc/cron.d/trim-update-guard"
+    if [[ ! -f "$guard_cron" ]]; then
+        echo "# 监控 trim 自动更新，每分钟检查一次" > "$guard_cron"
+        echo "* * * * * root /usr/local/bin/trim-update-guard.sh" >> "$guard_cron"
+        success "已部署 trim-update-guard 定时任务（每分钟检查）"
+    fi
 }
 
 # --- 2.2 中文环境安装 ---
@@ -1443,6 +1756,13 @@ install_all() {
         return 1
     fi
 
+    # 2.5 检测并处理 trim 源造成的 avahi 冲突（飞牛 NAS 常见，不处理则桌面环境装不上）
+    # 此项不影响 XRDP/VNC/Wine 等非桌面组件，但放在此处在所有安装之前更安全
+    check_trim_avahi_conflict || warn "trim avahi 冲突处理失败，继续尝试安装..."
+
+    # 2.6 飞牛 NAS 安装前修复（dpkg 半配置包、liveupdate 清理、initramfs 保护）
+    fnos_pre_install_fix
+
     # 3. 解析组件选择
     local do_desktop=true
     local do_xrdp=true
@@ -1468,58 +1788,83 @@ install_all() {
                 --desktop=mate)  DESKTOP_CHOICE="mate" ;;
                 --all)           do_vnc=true; do_wine="full"; do_input_method=true; do_bottles=true ;;
                 --desktop-only)  do_xrdp=false ;;
+                --no-desktop)    do_desktop=false ;;
             esac
         done
     elif [[ "$INTERACTIVE" == "true" ]]; then
-        echo -e "${BOLD}请选择要安装的组件:${NC}"
-        echo ""
+        # 模块化组件选择菜单
+        local has_desktop=false
+        [[ "${SCAN_RESULT[已有桌面环境]}" == warn* ]] && has_desktop=true
 
-        # 桌面环境选择
-        echo -e "  桌面环境:"
-        echo -e "    ${GREEN}1)${NC} XFCE4（轻量，推荐） ${GREEN}[默认]${NC}"
-        echo -e "    ${GREEN}2)${NC} LXQt（极轻量）"
-        echo -e "    ${GREEN}3)${NC} MATE（中等资源占用）"
-        echo ""
-        read -r -p "选择桌面 [1-3，默认 1]: " de_choice
-        case "$de_choice" in
-            2) DESKTOP_CHOICE="lxqt" ;;
-            3) DESKTOP_CHOICE="mate" ;;
-            *) DESKTOP_CHOICE="xfce4" ;;
-        esac
+        while true; do
+            echo ""
+            echo -e "${BOLD}  请选择要安装的组件（输入编号，多个用逗号分隔）:${NC}"
+            echo ""
+            echo -e "  ${PURPLE}── 桌面环境 ──${NC}"
+            echo -e "  ${GREEN}1)${NC} XFCE4 桌面（轻量，推荐）"
+            echo -e "  ${GREEN}2)${NC} LXQt 桌面（极轻量）"
+            echo -e "  ${GREEN}3)${NC} MATE 桌面（中等资源占用）"
+            if [[ "$has_desktop" == "true" ]]; then
+                echo -e "  ${GREEN}0)${NC} 跳过桌面（使用已有桌面）${YELLOW}[推荐]${NC}"
+            else
+                echo -e "  ${GREEN}0)${NC} 跳过桌面（${RED}风险：XRDP 将黑屏${NC}）"
+            fi
+            echo ""
+            echo -e "  ${PURPLE}── 远程协议 ──${NC}"
+            echo -e "  ${GREEN}4)${NC} XRDP 远程桌面 ${CYAN}[推荐]${NC}"
+            echo -e "  ${GREEN}5)${NC} VNC 远程桌面"
+            echo ""
+            echo -e "  ${PURPLE}── 可选软件 ──${NC}"
+            echo -e "  ${GREEN}6)${NC} Wine 精简版（仅核心）"
+            echo -e "  ${GREEN}7)${NC} Wine 完整版（含 winetricks）"
+            echo -e "  ${GREEN}8)${NC} Fcitx5 中文输入法"
+            echo -e "  ${GREEN}9)${NC} Bottles（图形化 Wine 管理）"
+            echo ""
 
-        echo ""
-        echo -e "  选中桌面: ${CYAN}$DESKTOP_CHOICE${NC}"
-        echo ""
+            local default_hint="1,4"
+            [[ "$has_desktop" == "true" ]] && default_hint="0,4"
+            read -r -p "  选择 [默认: ${default_hint}]: " install_str
+            install_str="${install_str:-$default_hint}"
 
-        # 远程协议
-        echo -e "  ${GREEN}4)${NC} XRDP 远程桌面              [推荐]"
-        echo -e "  ${GREEN}5)${NC} VNC 远程桌面                [可选]"
+            # 解析选择
+            do_desktop=false
+            do_xrdp=false
+            do_vnc=false
+            do_wine=""
+            do_input_method=false
+            do_bottles=false
 
-        # 可选软件
-        echo -e "  ${GREEN}6)${NC} Wine 兼容环境               [可选]"
-        echo -e "  ${GREEN}7)${NC} Fcitx5 中文输入法           [可选]"
-        echo -e "  ${GREEN}8)${NC} Bottles (图形化 Wine 管理)  [可选]"
-        echo ""
-
-        read -r -p "输入要跳过的组件编号（如: 5,6,7），直接回车安装全部: " skip_str
-
-        if [[ -n "$skip_str" ]]; then
-            IFS=',' read -ra skip_arr <<< "$skip_str"
-            for s in "${skip_arr[@]}"; do
+            IFS=',' read -ra install_arr <<< "$install_str"
+            for s in "${install_arr[@]}"; do
                 case "$(echo "$s" | tr -d ' ')" in
-                    4) do_xrdp=false ;;
-                    5) do_vnc=false ;;
-                    6) do_wine="" ;;
-                    7) do_input_method=false ;;
-                    8) do_bottles=false ;;
+                    0) do_desktop=false ;;
+                    1) do_desktop=true; DESKTOP_CHOICE="xfce4" ;;
+                    2) do_desktop=true; DESKTOP_CHOICE="lxqt" ;;
+                    3) do_desktop=true; DESKTOP_CHOICE="mate" ;;
+                    4) do_xrdp=true ;;
+                    5) do_vnc=true ;;
+                    6) do_wine="minimal" ;;
+                    7) do_wine="full" ;;
+                    8) do_input_method=true ;;
+                    9) do_bottles=true ;;
+                    *) warn "忽略无效编号: $s" ;;
                 esac
             done
-        else
-            do_vnc=true
-            do_wine="full"
-            do_input_method=true
-            do_bottles=true
-        fi
+
+            # 校验
+            if [[ "$do_xrdp" != "true" && "$do_vnc" != "true" && "$do_desktop" != "true" && -z "$do_wine" && "$do_input_method" != "true" && "$do_bottles" != "true" ]]; then
+                warn "至少需要选择一个组件"
+                continue
+            fi
+            # 仅当用户选了远程协议但没选桌面，且系统也没有桌面时警告
+            if [[ "$do_desktop" != "true" && "$has_desktop" != "true" ]] && [[ "$do_xrdp" == "true" || "$do_vnc" == "true" ]]; then
+                warn "未选择桌面环境且系统无桌面，XRDP 连接后将黑屏！"
+                if ! confirm "确定继续?" "n"; then
+                    continue
+                fi
+            fi
+            break
+        done
     fi
 
     # 记录开始安装
@@ -1595,8 +1940,22 @@ install_all() {
     write_state "status" "installed"
     success "远程桌面安装完成！"
     echo ""
+
+    # 飞牛 NAS 安装后保护（ufw 端口保护 + trim 更新看门狗）
+    fnos_post_install_protect
+
     info "连接方式: 使用 Windows 远程桌面连接到 $(hostname -I 2>/dev/null | awk '{print $1}' || echo '服务器IP'):${XRDP_PORT}"
     echo "如需完整中文支持，建议重启系统。"
+
+    # 飞牛 NAS 特定提示
+    if [[ "$IS_FNOS" == "true" ]]; then
+        echo ""
+        echo -e "${YELLOW}飞牛 NAS 注意事项:${NC}"
+        echo "  - 已自动部署 ufw 端口保护（防止 trim 更新重置防火墙规则）"
+        echo "  - 已自动部署 trim 更新看门狗（防止 trim 自动更新导致系统假死）"
+        echo "  - 如需手动允许 trim 更新，删除 /tmp/trim_update_guarded 后重启"
+        echo "  - 日志位置: /var/log/trim-update-guard.log /var/log/ufw-protect.log"
+    fi
     pause
     return 0
 }
@@ -1640,8 +1999,9 @@ user_add() {
     if [[ "$INTERACTIVE" == "true" ]]; then
         echo "密码设置:"
         echo "  1) 手动输入"
-        echo "  2) 随机生成"
-        read -r -p "选择: " pw_choice
+        echo "  2) 随机生成 [默认]"
+        read -r -p "选择 [2]: " pw_choice
+        pw_choice="${pw_choice:-2}"
 
         case "$pw_choice" in
             1)
@@ -2158,7 +2518,13 @@ _uninstall_single() {
     # 桌面环境特殊处理：检测系统上是否实际有桌面包
     if [[ "$component" == "desktop" ]]; then
         local has_desktop=false
-        dpkg -l xfce4 lxqt mate-desktop-environment gnome-shell plasma-desktop lxde-core 2>/dev/null | grep -q '^ii' && has_desktop=true
+        # 逐个包检查，避免单个未知包导致 dpkg 整体失败（pipefail 下会误判为未安装）
+        for de_pkg in xfce4 lxqt mate-desktop-environment gnome-shell plasma-desktop lxde-core; do
+            if dpkg -l "$de_pkg" 2>/dev/null | grep -q '^ii'; then
+                has_desktop=true
+                break
+            fi
+        done
 
         if [[ "$has_desktop" == "false" ]] && ! is_component_installed "desktop"; then
             info "组件 desktop 未安装，跳过"
@@ -2321,14 +2687,41 @@ show_main_menu() {
             1) install_all ;;
             2) user_management ;;
             3)
-                echo "可选服务: xrdp, xrdp-sesman"
-                read -r -p "输入 服务 操作 (如: xrdp restart): " svc act
-                service_control "$svc" "$act"
+                echo "  选择服务:"
+                echo "    1) XRDP 服务"
+                echo "    2) XRDP Sesman 服务"
+                read -r -p "选择 [1]: " svc_choice
+                svc_choice="${svc_choice:-1}"
+                local svc_name=""
+                case "$svc_choice" in
+                    2) svc_name="xrdp-sesman" ;;
+                    *) svc_name="xrdp" ;;
+                esac
+                echo "  选择操作:"
+                echo "    1) 启动  2) 停止  3) 重启  4) 查看状态  5) 开机自启  6) 禁用自启"
+                read -r -p "选择 [3]: " act_choice
+                act_choice="${act_choice:-3}"
+                local act_name=""
+                case "$act_choice" in
+                    1) act_name="start" ;;
+                    2) act_name="stop" ;;
+                    3) act_name="restart" ;;
+                    4) act_name="status" ;;
+                    5) act_name="enable" ;;
+                    6) act_name="disable" ;;
+                    *) act_name="restart" ;;
+                esac
+                service_control "$svc_name" "$act_name"
                 pause
                 ;;
             4)
-                read -r -p "操作 (open/close): " fw_act
-                configure_firewall "$fw_act"
+                echo "  1) 开放远程桌面端口（允许外部连接）"
+                echo "  2) 关闭远程桌面端口（禁止外部连接）"
+                read -r -p "选择 [1]: " fw_choice
+                case "$fw_choice" in
+                    2) configure_firewall "close" ;;
+                    *) configure_firewall "open" ;;
+                esac
                 pause
                 ;;
             5)
@@ -2336,8 +2729,24 @@ show_main_menu() {
                 read -r -p "选择: " sub
                 case "$sub" in
                     1)
-                        read -r -p "宽 高 色彩深度 (如: 1920 1080 24): " w h d
-                        set_resolution "${w:-1280}" "${h:-720}" "${d:-24}"
+                        echo "  常用分辨率:"
+                        echo "    1) 1280x720  (720p)"
+                        echo "    2) 1920x1080 (1080p)"
+                        echo "    3) 2560x1440 (2K)"
+                        echo "    4) 自定义"
+                        read -r -p "选择 [2]: " res_choice
+                        res_choice="${res_choice:-2}"
+                        case "$res_choice" in
+                            1) set_resolution 1280 720 24 ;;
+                            2) set_resolution 1920 1080 24 ;;
+                            3) set_resolution 2560 1440 24 ;;
+                            4)
+                                read -r -p "宽度 (如 1920): " w
+                                read -r -p "高度 (如 1080): " h
+                                set_resolution "${w:-1920}" "${h:-1080}" 24
+                                ;;
+                            *) set_resolution 1920 1080 24 ;;
+                        esac
                         ;;
                     2) set_port ;;
                     3) swap_manage ;;
