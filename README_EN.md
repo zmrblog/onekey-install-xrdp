@@ -1,200 +1,148 @@
-# One-Key XRDP Remote Desktop Installer v2.0.0
+# Remote Desktop One-Click Install & Maintenance Script
 
-One-click script to install and configure XRDP remote desktop on Debian/Ubuntu, with Feiniu NAS (fnOS) support.
-
-## Features
-
-- **Modular Installation** — Pick and choose desktop, remote protocol, and optional software
-- **Feiniu NAS Support** — Auto-fix dpkg corruption, deploy watchdogs to prevent trim update crashes
-- **Interactive & Non-interactive Modes** — Menu-driven or fully scripted via CLI arguments
-- **Full Lifecycle Management** — Install, user management, service control, configuration, modular uninstall
+A modular remote desktop installation and management script for Debian/Ubuntu systems, supporting flexible installation and maintenance of XRDP, VNC, desktop environments, Wine, Chinese input methods, browsers, and more.
 
 ## Supported Systems
 
-| System | Versions |
-|--------|----------|
-| Debian | 10 / 11 / 12 / 13 |
-| Ubuntu | 20.04 / 22.04 / 24.04 |
-| Feiniu NAS | All versions |
+- Debian 10 / 11 / 12 / 13
+- Ubuntu 20.04 / 22.04 / 24.04
+- FnNAS (FnOS) —— automatic adaptation and protection
 
-Architecture: x86_64 / aarch64
+## Features
+
+### 1. System Pre-Scan
+Automatic detection before installation:
+- Disk space, memory, apt health status
+- Network connectivity, port occupancy (3389)
+- Existing desktop environments, existing XRDP, existing browsers
+- Display manager, FnNAS-specific issues
+
+### 2. Modular Installation
+Wizard-style component selection with free combination:
+
+| Component | Description |
+|-----------|-------------|
+| **XFCE4 Desktop** | Lightweight desktop, recommended |
+| **LXQt Desktop** | Ultra-lightweight desktop |
+| **MATE Desktop** | Medium resource usage |
+| **XRDP** | Windows Remote Desktop Protocol (RDP) |
+| **VNC** | TigerVNC remote desktop |
+| **Wine Minimal** | Core components only |
+| **Wine Full** | Includes winetricks |
+| **Fcitx5 Input Method** | Chinese input method support |
+| **Bottles** | GUI Wine manager (Flatpak) |
+| **Browser** | Firefox ESR / Chromium / Midori (smart recommendation based on memory) |
+
+### 3. FnNAS Automatic Adaptation
+- Detect and fix trim source avahi package conflicts
+- Fix dpkg half-configured packages, clean up corrupted liveupdate
+- Temporarily disable update-initramfs (automatically restored after installation)
+- Deploy UFW port protection (prevent trim updates from resetting firewall rules)
+- Deploy trim update watchdog (prevent automatic updates from causing system freezes)
+
+### 4. Firewall Configuration
+- Open/close remote desktop ports
+- View firewall status and listening ports
+- **Open/close custom ports** (supports single port or port range)
+
+### 5. User Management
+- Add/delete users, change passwords
+- Random password generation, sudo privilege configuration
+- Automatic injection of Chinese environment variables
+
+### 6. Service Control
+- XRDP / XRDP-Sesman service management
+- Start / Stop / Restart / Status / Enable / Disable
+
+### 7. System Configuration
+- Adjust XRDP resolution (720p / 1080p / 2K / Custom)
+- Modify XRDP listening port (automatically updates firewall)
+- Swap management (Create / Delete / View)
+
+### 8. Status Diagnostics
+- System information, XRDP service status, port listening
+- Installed components, resource usage, recent logs
+
+### 9. Safe Uninstall
+Supports component-by-component or one-click uninstallation of all components. Desktop environment uninstallation thoroughly cleans up residual packages and startup commands.
 
 ## Quick Start
 
 ```bash
-# Download
+# Download the script
 wget https://raw.githubusercontent.com/zmrblog/onekey-install-xrdp/main/install.sh
 
-# Make executable
-chmod +x install.sh
+# Run (interactive menu mode)
+sudo bash install.sh
 
-# Interactive install (recommended)
-sudo ./install.sh
-
-# Default install (XFCE4 + XRDP)
-sudo ./install.sh install
-
-# Custom components
-sudo ./install.sh install --desktop=mate --wine=full --input-method
+# Or one-click install all components
+sudo bash install.sh install --all
 ```
 
-## Component Selection
+## CLI Usage
 
-| # | Component | Description |
-|---|-----------|-------------|
-| 1 | XFCE4 Desktop | Lightweight, recommended |
-| 2 | LXQt Desktop | Ultra-lightweight |
-| 3 | MATE Desktop | Moderate resource usage |
-| 0 | Skip Desktop | Use existing desktop |
-| 4 | XRDP Remote Desktop | Recommended |
-| 5 | VNC Remote Desktop | Optional |
-| 6 | Wine Minimal | Core only |
-| 7 | Wine Full | With winetricks |
-| 8 | Fcitx5 Chinese Input | Optional |
-| 9 | Bottles | Graphical Wine manager |
-
-In interactive mode, enter numbers separated by commas, e.g. `0,4,7,8`.
-
-## Main Menu
-
-```
-  1) Install Remote Desktop (guided component selection)
-  2) User Management (add/delete/password/list)
-  3) Service Control (start/stop/restart/status)
-  4) Firewall Configuration (open/close ports)
-  5) Adjust Resolution/Port/Swap
-  6) Status Diagnostics
-  7) Modular Uninstall
-  8) View Operation Log
-  0) Exit
+```bash
+sudo bash install.sh [command] [options]
 ```
 
-## CLI Arguments
-
-### Top-level Commands
-
-| Command | Description |
-|---------|-------------|
-| `install [options]` | Install remote desktop |
-| `user add [username]` | Add user |
-| `user del <username>` | Delete user |
-| `user passwd <username>` | Change password |
-| `user list` | List users |
-| `service <service> <action>` | Service control |
-| `firewall <open\|close>` | Firewall configuration |
-| `resolution <width> <height> [depth]` | Adjust resolution |
-| `port <port>` | Change XRDP port |
-| `status` / `diag` | System diagnostics |
-| `swap` | Swap management |
-| `uninstall <component>` | Uninstall component |
-
-### Install Options
+### Install Command
+```bash
+sudo bash install.sh install [options]
+```
 
 | Option | Description |
 |--------|-------------|
-| `--all` | Install all components |
+| `--all` | Install all components (including Bottles) |
 | `--xrdp` | Install XRDP |
-| `--no-xrdp` | Skip XRDP |
+| `--no-xrdp` | Do not install XRDP |
 | `--vnc` | Install VNC |
-| `--wine=minimal` | Wine core only |
-| `--wine=full` | Wine with winetricks |
-| `--input-method` | Install Fcitx5 Chinese input |
+| `--wine=minimal` | Install Wine core |
+| `--wine=full` | Install Wine full version |
 | `--bottles` | Install Bottles |
-| `--desktop=xfce4` | XFCE4 desktop |
-| `--desktop=lxqt` | LXQt desktop |
-| `--desktop=mate` | MATE desktop |
-| `--desktop-only` | Desktop only (no XRDP) |
-| `--no-desktop` | Skip desktop |
+| `--desktop=xfce4` | Select desktop: xfce4 / lxqt / mate |
+| `--input-method` | Install Chinese input method |
+| `--browser=firefox-esr` | Install browser |
+| `--browser=chromium` | Install Chromium |
+| `--browser=midori` | Install Midori |
+| `--desktop-only` | Install desktop environment only |
+| `--no-desktop` | Do not install desktop environment |
 
-### Uninstallable Components
-
-`xrdp` / `vnc` / `desktop` / `wine` / `input_method` / `bottles` / `all`
-
-## Configuration
-
-### Resolution
-
-Presets: 720p / 1080p / 2K. Custom width, height, and color depth supported (default 24-bit, max 32-bit).
-
+### Other Commands
 ```bash
-sudo ./install.sh resolution 1920 1080 24
+sudo bash install.sh user add [username]      # Add user
+sudo bash install.sh user del <username>      # Delete user
+sudo bash install.sh user passwd <username>   # Change password
+sudo bash install.sh user list                # List users
+
+sudo bash install.sh service xrdp status      # Service status
+sudo bash install.sh firewall open            # Open firewall
+sudo bash install.sh firewall close           # Close firewall
+sudo bash install.sh resolution 1920 1080     # Set resolution
+sudo bash install.sh port 3389                # Change port
+sudo bash install.sh status                   # System diagnostics
+
+sudo bash install.sh uninstall <component>    # Uninstall component
+# Components: xrdp, vnc, desktop, wine, input_method, bottles, browser, all
 ```
 
-### Port
+## Notes
 
-Default: 3389. Automatically updates firewall rules and restarts service.
+1. **Must run with root privileges**: `sudo bash install.sh`
+2. **Bash version requirement**: Bash 4.0 or higher required
+3. **FnNAS users**: The script automatically detects and deploys system protection measures, no manual configuration needed after installation
+4. **Port conflicts**: If port 3389 is occupied, the script automatically finds the next available port
+5. **Desktop environment conflicts**: If another desktop is already installed, the script will prompt and allow coexistence or skip
 
-```bash
-sudo ./install.sh port 3390
-```
+## File Locations
 
-### Swap
-
-Create, delete, or check swap status. Auto-persists via /etc/fstab.
-
-## Feiniu NAS Specifics
-
-### Pre-install Auto-fix
-
-1. **Clean corrupted liveupdate dpkg metadata** — Does not affect binaries
-2. **Fix half-configured dpkg packages** — Process triggers + reconfigure
-3. **Temporarily disable update-initramfs** — Prevents crash during installation
-
-### Trim Repository Avahi Conflict
-
-The Feiniu trim repo's avahi package has incompatible versioning. The script auto-writes apt pin rules to downgrade to Debian standard versions.
-
-### Post-install Watchdogs
-
-| Script | Function | Frequency |
-|--------|----------|-----------|
-| `ufw-protect.sh` | Protect Web ports + 3389, prevent trim from resetting firewall | Every 5 min |
-| `trim-update-guard.sh` | Monitor liveupdate process, prevent auto-update crashes | Every 1 min |
-
-Manually allow updates: `rm /tmp/trim_update_guarded`
-
-## Pre-scan Checks
-
-| Check | Description |
-|-------|-------------|
-| apt status | No locks, dependencies OK |
-| Disk space | Min 3 GB, recommended 5 GB+ |
-| Memory | Min 512 MB, recommended 1 GB+ |
-| Network | Internet access |
-| Port 3389 | Availability |
-| Existing desktop | Conflict detection |
-| Existing XRDP | Version detection |
-| Display manager | Compatibility |
-
-Additional checks on Feiniu NAS: dpkg half-configured packages, liveupdate status, initramfs health.
-
-## Other Features
-
-- **Concurrency protection** — Atomic mkdir-based directory lock
-- **Container adaptation** — Detects Docker/LXC, skips display manager startup
-- **China mirrors** — Auto-switch to Aliyun/USTC/Tsinghua mirrors on apt failure
-- **DNS pre-check** — Test DNS resolution, provide fix commands on failure
-- **State engine** — JSON-based install state tracking with dpkg fallback detection
-- **Safe uninstall** — Thorough cleanup of metapackages, autoremove, residual packages and configs
-
-## Requirements
-
-- Root privileges
-- Bash 4.0+
-- apt package manager
-- Disk space >= 3 GB
-- Memory >= 512 MB
-- Internet connection
-
-## Connecting
-
-After installation, use Windows Remote Desktop Connection (mstsc):
-
-```
-Address: <server-ip>:3389
-Username: root or created user
-Password: corresponding password
-```
+| File/Directory | Description |
+|----------------|-------------|
+| `/var/lib/rdp-setup/state.json` | Installation state record |
+| `/var/log/rdp-setup/setup.log` | Operation log |
+| `/etc/xrdp/xrdp.ini` | XRDP configuration file |
+| `/etc/xrdp/startwm.sh` | XRDP session startup script |
+| `/usr/local/bin/ufw-protect.sh` | FnNAS UFW protection script |
+| `/usr/local/bin/trim-update-guard.sh` | FnNAS update watchdog |
 
 ## License
 
