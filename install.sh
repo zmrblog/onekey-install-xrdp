@@ -1713,6 +1713,69 @@ configure_firewall() {
     esac
 }
 
+show_firewall_status() {
+    echo ""
+    echo -e "${BOLD}防火墙状态和开放端口${NC}"
+    echo ""
+
+    if ! command -v ufw &>/dev/null; then
+        echo -e "${YELLOW}UFW 防火墙未安装${NC}"
+        echo ""
+    else
+        echo -e "${CYAN}[UFW 防火墙状态]${NC}"
+        local status
+        status="$(ufw status 2>/dev/null)"
+        if [[ "$status" =~ "Status: active" ]]; then
+            echo "  状态: ${GREEN}已启用${NC}"
+        elif [[ "$status" =~ "Status: inactive" ]]; then
+            echo "  状态: ${RED}已禁用${NC}"
+        else
+            echo "  状态: ${YELLOW}未知${NC}"
+        fi
+        echo ""
+
+        echo -e "${CYAN}[UFW 规则列表]${NC}"
+        if [[ -n "$status" ]]; then
+            echo "$status" | grep -v "^Status:" | grep -v "^$" | while read -r rule; do
+                if [[ -n "$rule" ]]; then
+                    echo "  $rule"
+                fi
+            done
+        else
+            echo "  无法获取规则列表"
+        fi
+    fi
+
+    echo ""
+    echo -e "${CYAN}[监听端口]${NC}"
+    if command -v ss &>/dev/null; then
+        ss -tlnp 2>/dev/null | grep -v '127.0.0.1' | grep -v '::1' | awk '{print "  " $5 " - " $7}'
+    elif command -v netstat &>/dev/null; then
+        netstat -tlnp 2>/dev/null | grep -v '127.0.0.1' | grep -v '::1' | awk '{print "  " $4 " - " $7}'
+    else
+        echo "  无法获取监听端口信息"
+    fi
+
+    echo ""
+    echo -e "${CYAN}[远程桌面相关端口]${NC}"
+    local xrdp_port
+    xrdp_port="$(grep -oP '^port=\K\d+' /etc/xrdp/xrdp.ini 2>/dev/null || echo "3389")"
+    
+    echo -n "  XRDP 端口 ($xrdp_port): "
+    if ss -tlnp 2>/dev/null | grep -q ":$xrdp_port"; then
+        echo -e "${GREEN}已监听${NC}"
+    else
+        echo -e "${RED}未监听${NC}"
+    fi
+
+    echo -n "  VNC 端口 (5900-5910): "
+    if ss -tlnp 2>/dev/null | grep -q ":590"; then
+        echo -e "${GREEN}已监听${NC}"
+    else
+        echo -e "${YELLOW}未监听或部分监听${NC}"
+    fi
+}
+
 # --- 2.10 一键安装入口 ---
 
 install_all() {
@@ -2801,6 +2864,7 @@ show_main_menu() {
                     echo "  防火墙配置:"
                     echo "    1) 开放远程桌面端口（允许外部连接）"
                     echo "    2) 关闭远程桌面端口（禁止外部连接）"
+                    echo "    3) 查看防火墙状态和开放端口"
                     echo "    0) 返回上一级"
                     read -r -p "选择 [1]: " fw_choice
                     
@@ -2809,10 +2873,10 @@ show_main_menu() {
                     fi
                     
                     case "$fw_choice" in
-                        2) configure_firewall "close" ;;
-                        *) configure_firewall "open" ;;
+                        2) configure_firewall "close"; pause ;;
+                        3) show_firewall_status; pause ;;
+                        *) configure_firewall "open"; pause ;;
                     esac
-                    pause
                 done
                 pause
                 ;;
