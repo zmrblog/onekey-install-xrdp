@@ -24,6 +24,9 @@ readonly CYAN='\033[0;36m'
 readonly BOLD='\033[1m'
 readonly NC='\033[0m'
 
+# 禁用 systemd 命令的自动颜色输出，避免在 xrdp/不支持 ANSI 的终端中出现乱码
+export SYSTEMD_COLORS=false
+
 # 路径常量
 readonly STATE_DIR="/var/lib/rdp-setup"
 readonly STATE_FILE="${STATE_DIR}/state.json"
@@ -2507,7 +2510,7 @@ service_control() {
     fi
 
     case "$action" in
-        start|stop|restart|status|enable|disable)
+        start|stop|restart|enable|disable)
             if has_systemd; then
                 systemctl "$action" "$service_name" 2>/dev/null && \
                     success "$service_name $action 完成" || \
@@ -2517,6 +2520,17 @@ service_control() {
                     success "$service_name $action 完成" || \
                     error "$service_name $action 失败"
             fi
+            ;;
+        status)
+            echo ""
+            if has_systemd; then
+                systemctl status "$service_name" --no-pager 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || \
+                    error "无法获取 $service_name 状态"
+            else
+                service "$service_name" status 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || \
+                    error "无法获取 $service_name 状态"
+            fi
+            echo ""
             ;;
         *)
             error "无效操作: $action"
@@ -2659,8 +2673,8 @@ swap_manage() {
             ;;
         3)
             echo ""
-            swapon --show 2>/dev/null || echo "当前无 Swap"
-            free -h
+            swapon --show 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || echo "当前无 Swap"
+            free -h 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'
             ;;
         4) return 0 ;;
     esac
@@ -2703,7 +2717,7 @@ run_diagnostic() {
     # 端口监听
     echo -e "${CYAN}[端口监听]${NC}"
     if command -v ss &>/dev/null; then
-        ss -tlnp 2>/dev/null | grep -E ':3389|:590.' | while read -r line; do
+        ss -tlnp 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -E ':3389|:590.' | while read -r line; do
             echo "  $line"
         done
     fi
@@ -2727,19 +2741,19 @@ run_diagnostic() {
 
     # 内存
     echo -e "${CYAN}[资源]${NC}"
-    free -h | grep -E 'Mem|Swap' | while read -r line; do
+    free -h 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -E 'Mem|Swap' | while read -r line; do
         echo "  $line"
     done
     echo ""
 
     # 磁盘
-    df -h / | awk 'NR==2 { printf "  磁盘: %s/%s (已用 %s)\n", $3, $2, $5 }'
+    df -h / 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk 'NR==2 { printf "  磁盘: %s/%s (已用 %s)\n", $3, $2, $5 }'
     echo ""
 
     # 日志摘要
     echo -e "${CYAN}[最近日志]${NC}"
     if [[ -f "$LOG_FILE" ]]; then
-        tail -n 10 "$LOG_FILE" | while read -r line; do
+        tail -n 10 "$LOG_FILE" | sed 's/\x1b\[[0-9;]*m//g' | while read -r line; do
             echo "  $line"
         done
     fi
@@ -3140,7 +3154,7 @@ show_main_menu() {
                 if [[ -f "$LOG_FILE" ]]; then
                     echo -e "${BOLD}最近 30 条操作日志:${NC}"
                     echo ""
-                    tail -n 30 "$LOG_FILE"
+                    tail -n 30 "$LOG_FILE" | sed 's/\x1b\[[0-9;]*m//g'
                 else
                     echo "日志文件不存在"
                 fi
