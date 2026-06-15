@@ -1160,45 +1160,45 @@ install_chinese_locale() {
     success "中文语言环境配置完成"
 }
 
-# 注入 XRDP startwm.sh 的中文环境变量
+# 注入 XRDP startwm.sh 的中文环境变量和桌面自动检测
 inject_xrdp_locale() {
-    local desktop="${1:-$DESKTOP_CHOICE}"
     local wm_script="/etc/xrdp/startwm.sh"
 
     if [[ ! -f "$wm_script" ]]; then
         return 0
     fi
 
-    info "注入 XRDP 中文环境变量（桌面: $desktop）..."
+    info "配置 XRDP startwm.sh（中文环境 + 桌面自动检测）..."
 
-    # 清理旧的重复配置
-    sed -i '/^export LANG=/d; /^export LANGUAGE=/d; /^export LC_ALL=/d' "$wm_script"
-    # 清理旧的 session 启动命令（startxfce4/startlxqt/mate-session）
-    sed -i '/^startxfce4$/d; /^startlxqt$/d; /^mate-session$/d' "$wm_script"
+    # 直接重写 startwm.sh，使用自动检测逻辑
+    cat > "$wm_script" << 'STARTWM'
+#!/bin/sh
+export LANG=zh_CN.UTF-8
+export LANGUAGE=zh_CN:zh
+export LC_ALL=zh_CN.UTF-8
 
-    # 在第1行后插入环境变量（写入临时文件确保兼容性）
-    {
-        head -n 1 "$wm_script"
-        echo 'export LANG=zh_CN.UTF-8'
-        echo 'export LANGUAGE=zh_CN:zh'
-        echo 'export LC_ALL=zh_CN.UTF-8'
-        tail -n +2 "$wm_script"
-    } > "${wm_script}.tmp" && mv "${wm_script}.tmp" "$wm_script"
+if test -r /etc/profile; then
+    . /etc/profile
+fi
 
-    # 修复黑屏问题（注释掉默认的 Xsession 执行）
-    sed -i 's/^test -x \/etc\/X11\/Xsession/#test -x \/etc\/X11\/Xsession/' "$wm_script"
-    sed -i 's/^exec \/bin\/sh \/etc\/X11\/Xsession/#exec \/bin\/sh \/etc\/X11\/Xsession/' "$wm_script"
+if test -r ~/.profile; then
+    . ~/.profile
+fi
 
-    # 追加对应桌面的启动命令
-    local session_cmd
-    case "$desktop" in
-        lxqt)    session_cmd="startlxqt" ;;
-        mate)    session_cmd="mate-session" ;;
-        *)       session_cmd="startxfce4" ;;
-    esac
-    echo "$session_cmd" >> "$wm_script"
+# 自动检测已安装的桌面环境（优先级：MATE > XFCE4 > LXQt）
+if command -v mate-session >/dev/null 2>&1; then
+    exec mate-session
+elif command -v startxfce4 >/dev/null 2>&1; then
+    exec startxfce4
+elif command -v startlxqt >/dev/null 2>&1; then
+    exec startlxqt
+elif test -x /etc/X11/Xsession; then
+    exec /etc/X11/Xsession
+fi
+STARTWM
+    chmod +x "$wm_script"
 
-    success "XRDP 中文环境变量已注入，启动桌面: $session_cmd"
+    success "XRDP startwm.sh 已配置（自动检测桌面环境）"
 }
 
 # --- 2.3 桌面环境安装 ---
@@ -1947,6 +1947,34 @@ INITEOF
         success "update-initramfs 已恢复"
     fi
 
+    # 验证安装的桌面环境
+    info "验证安装的桌面环境..."
+    local detected_desktop=""
+    if command -v startxfce4 >/dev/null 2>&1; then
+        detected_desktop="XFCE4"
+    elif command -v mate-session >/dev/null 2>&1; then
+        detected_desktop="MATE"
+    elif command -v startlxqt >/dev/null 2>&1; then
+        detected_desktop="LXQt"
+    fi
+
+    if [[ -n "$detected_desktop" ]]; then
+        success "已检测到桌面环境: $detected_desktop"
+    else
+        warn "未检测到任何桌面环境！XRDP 连接后可能只有终端界面"
+    fi
+
+    # 验证 startwm.sh 配置
+    if [[ -f /etc/xrdp/startwm.sh ]]; then
+        local wm_cmd
+        wm_cmd="$(grep -E '^exec (startxfce4|mate-session|startlxqt)' /etc/xrdp/startwm.sh | head -1 | awk '{print $2}')"
+        if [[ -n "$wm_cmd" ]]; then
+            info "XRDP 将启动: $wm_cmd"
+        else
+            warn "startwm.sh 中未配置桌面启动命令"
+        fi
+    fi
+
     # 飞牛 NAS 安装后保护（ufw 端口保护 + trim 更新看门狗）
     fnos_post_install_protect
 
@@ -2549,7 +2577,7 @@ _uninstall_single() {
             # 彻底清理所有桌面环境类型（包括其他脚本安装的）
             purge_desktop_family "XFCE4" "^xfce4|^xubuntu|^thunar|^xfwm4|^xfdesktop4|^tumbler|^mousepad|^ristretto|^parole|^exo-|^garcon|^libxfce4" "xfce4 xfce4-goodies xubuntu-desktop"
             purge_desktop_family "LXQt" "^lxqt|^sddm" "lxqt lxqt-core"
-            purge_desktop_family "MATE" "^mate-|^caja|^marco|^pluma|^atril|^engrampa|^eom" "mate-desktop-environment mate-desktop-environment-extras"
+            purge_desktop_family "MATE" "^mate-|^caja|^marco|^pluma|^atril|^engrampa|^eom|^mate-session" "mate-desktop-environment mate-desktop-environment-extras"
             purge_desktop_family "GNOME" "^gnome-|^nautilus|^mutter|^shell" "gnome-shell"
             purge_desktop_family "KDE" "^plasma-|^kde-|^kwin|^dolphin|^konsole" "plasma-desktop"
             purge_desktop_family "LXDE" "^lxde-|^openbox|^pcmanfm" "lxde-core"
@@ -2563,6 +2591,33 @@ _uninstall_single() {
             rm -rf /etc/xdg/xfce4 /etc/xdg/menus/xfce* /usr/share/xfce4 2>/dev/null || true
             rm -rf /etc/xdg/lxqt /usr/share/lxqt 2>/dev/null || true
             rm -rf /etc/xdg/mate /usr/share/mate 2>/dev/null || true
+
+            # 强制清理可能残留的 session 命令
+            info "强制清理残留的桌面启动命令..."
+            rm -f /usr/bin/mate-session /usr/bin/startxfce4 /usr/bin/startlxqt 2>/dev/null || true
+
+            # 验证清理结果
+            local remaining_sessions=""
+            for cmd in mate-session startxfce4 startlxqt; do
+                if command -v "$cmd" >/dev/null 2>&1; then
+                    remaining_sessions="$remaining_sessions $cmd"
+                fi
+            done
+
+            if [[ -n "$remaining_sessions" ]]; then
+                warn "仍有残留的桌面启动命令:$remaining_sessions，尝试进一步清理..."
+                # 通过 dpkg 查找这些命令属于哪个包，然后卸载
+                for cmd in $remaining_sessions; do
+                    local pkg
+                    pkg="$(dpkg -S "$(command -v "$cmd")" 2>/dev/null | awk -F: '{print $1}')"
+                    if [[ -n "$pkg" ]]; then
+                        info "卸载 $cmd 所属的包: $pkg"
+                        apt-get purge -y "$pkg" 2>/dev/null || true
+                    fi
+                done
+                # 最后再清理一次依赖
+                apt-get autoremove --purge -y 2>/dev/null || true
+            fi
 
             info "桌面环境已彻底卸载（用户家目录下的个人配置已保留）"
             ;;
