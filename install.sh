@@ -1716,17 +1716,17 @@ detect_browser_recommendation() {
     echo -e "${CYAN}[浏览器推荐]${NC}"
 
     if [[ "$total_mem_mb" -le 2048 ]]; then
-        echo "  ${GREEN}★ Midori${NC}（极轻量，WebKit 内核）"
-        echo "  ${GREEN}  Firefox ESR${NC}（稳定版，内存占用适中）"
-        echo "  ${YELLOW}  Chromium${NC}（资源占用较高，不推荐）"
+        echo -e "  ${GREEN}★ Midori${NC}（极轻量，WebKit 内核）"
+        echo -e "  ${GREEN}  Firefox ESR${NC}（稳定版，内存占用适中）"
+        echo -e "  ${YELLOW}  Chromium${NC}（资源占用较高，不推荐）"
     elif [[ "$total_mem_mb" -le 4096 ]]; then
-        echo "  ${GREEN}★ Firefox ESR${NC}（推荐，稳定且兼容性好）"
-        echo "  ${GREEN}  Midori${NC}（轻量备选）"
-        echo "  ${YELLOW}  Chromium${NC}（资源占用较高，可选）"
+        echo -e "  ${GREEN}★ Firefox ESR${NC}（推荐，稳定且兼容性好）"
+        echo -e "  ${GREEN}  Midori${NC}（轻量备选）"
+        echo -e "  ${YELLOW}  Chromium${NC}（资源占用较高，可选）"
     else
-        echo "  ${GREEN}★ Firefox ESR${NC}（推荐）"
-        echo "  ${GREEN}  Chromium${NC}（性能好，兼容性强）"
-        echo "  ${GREEN}  Midori${NC}（轻量备选）"
+        echo -e "  ${GREEN}★ Firefox ESR${NC}（推荐）"
+        echo -e "  ${GREEN}  Chromium${NC}（性能好，兼容性强）"
+        echo -e "  ${GREEN}  Midori${NC}（轻量备选）"
     fi
     echo ""
 }
@@ -1910,11 +1910,11 @@ show_firewall_status() {
         # 去除 ANSI 转义码，避免输出乱码
         status="$(ufw status 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
         if [[ "$status" =~ "Status: active" ]]; then
-            echo "  状态: ${GREEN}已启用${NC}"
+            echo -e "  状态: ${GREEN}已启用${NC}"
         elif [[ "$status" =~ "Status: inactive" ]]; then
-            echo "  状态: ${RED}已禁用${NC}"
+            echo -e "  状态: ${RED}已禁用${NC}"
         else
-            echo "  状态: ${YELLOW}未知${NC}"
+            echo -e "  状态: ${YELLOW}未知${NC}"
         fi
         echo ""
 
@@ -2691,12 +2691,12 @@ run_diagnostic() {
         echo "  版本: $xrdp_ver"
 
         if has_systemd; then
-            systemctl is-active xrdp 2>/dev/null && echo "  状态: ${GREEN}运行中${NC}" || echo "  状态: ${RED}已停止${NC}"
+            systemctl is-active xrdp 2>/dev/null && echo -e "  状态: ${GREEN}运行中${NC}" || echo -e "  状态: ${RED}已停止${NC}"
         else
             service xrdp status 2>/dev/null | head -2 | sed 's/\x1b\[[0-9;]*m//g'
         fi
     else
-        echo "  ${RED}未安装${NC}"
+        echo -e "  ${RED}未安装${NC}"
     fi
     echo ""
 
