@@ -612,6 +612,29 @@ scan_existing_xrdp() {
     fi
 }
 
+# 检查已有浏览器
+scan_existing_browser() {
+    local browsers_found=()
+
+    if command -v firefox-esr &>/dev/null || command -v firefox &>/dev/null; then
+        browsers_found+=("Firefox")
+    fi
+    if command -v chromium &>/dev/null || command -v chromium-browser &>/dev/null; then
+        browsers_found+=("Chromium")
+    fi
+    if command -v midori &>/dev/null; then
+        browsers_found+=("Midori")
+    fi
+
+    if [[ ${#browsers_found[@]} -eq 0 ]]; then
+        scan_record "已有浏览器" pass
+    else
+        local list
+        list="$(IFS=', '; echo "${browsers_found[*]}")"
+        scan_record "已有浏览器" warn "检测到已安装: $list"
+    fi
+}
+
 # 检查端口占用
 scan_ports() {
     local port_3389
@@ -692,6 +715,7 @@ run_prescan() {
     scan_ports
     scan_existing_desktop
     scan_existing_xrdp
+    scan_existing_browser
     scan_display_manager
 
     # 飞牛 NAS 额外扫描
@@ -1678,6 +1702,165 @@ EOF
     return 0
 }
 
+# --- 2.8.1 浏览器安装 ---
+
+detect_browser_recommendation() {
+    local total_mem_kb
+    total_mem_kb="$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 0)"
+    local total_mem_mb=$((total_mem_kb / 1024))
+
+    echo ""
+    echo -e "${CYAN}[服务器配置扫描]${NC}"
+    echo "  内存: ${total_mem_mb}MB"
+    echo ""
+    echo -e "${CYAN}[浏览器推荐]${NC}"
+
+    if [[ "$total_mem_mb" -le 2048 ]]; then
+        echo "  ${GREEN}★ Midori${NC}（极轻量，WebKit 内核）"
+        echo "  ${GREEN}  Firefox ESR${NC}（稳定版，内存占用适中）"
+        echo "  ${YELLOW}  Chromium${NC}（资源占用较高，不推荐）"
+    elif [[ "$total_mem_mb" -le 4096 ]]; then
+        echo "  ${GREEN}★ Firefox ESR${NC}（推荐，稳定且兼容性好）"
+        echo "  ${GREEN}  Midori${NC}（轻量备选）"
+        echo "  ${YELLOW}  Chromium${NC}（资源占用较高，可选）"
+    else
+        echo "  ${GREEN}★ Firefox ESR${NC}（推荐）"
+        echo "  ${GREEN}  Chromium${NC}（性能好，兼容性强）"
+        echo "  ${GREEN}  Midori${NC}（轻量备选）"
+    fi
+    echo ""
+}
+
+install_browser_firefox_esr() {
+    if command -v firefox-esr &>/dev/null || command -v firefox &>/dev/null; then
+        warn "Firefox 已安装"
+        if [[ "$INTERACTIVE" == "true" ]]; then
+            if ! confirm "是否重新安装?" "n"; then
+                return 0
+            fi
+        fi
+    fi
+
+    info "安装 Firefox ESR..."
+    apt-get update -qq
+    safe_exec "安装 Firefox ESR" apt-get install -y firefox-esr || return 1
+
+    # 创建桌面快捷方式
+    if [[ ! -f /usr/share/applications/firefox-esr.desktop ]]; then
+        cat > /usr/share/applications/firefox-esr.desktop << 'EOF'
+[Desktop Entry]
+Name=Firefox ESR
+Comment=Browse the World Wide Web
+Exec=/usr/bin/firefox-esr %u
+Icon=firefox-esr
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;
+EOF
+    fi
+
+    mark_component_installed "browser_firefox_esr" "firefox-esr"
+    success "Firefox ESR 安装完成"
+    return 0
+}
+
+install_browser_chromium() {
+    if command -v chromium &>/dev/null || command -v chromium-browser &>/dev/null; then
+        warn "Chromium 已安装"
+        if [[ "$INTERACTIVE" == "true" ]]; then
+            if ! confirm "是否重新安装?" "n"; then
+                return 0
+            fi
+        fi
+    fi
+
+    info "安装 Chromium..."
+    apt-get update -qq
+
+    # Debian/Ubuntu 包名差异处理
+    local pkg_name="chromium"
+    if [[ "$OS_ID" == "ubuntu" ]]; then
+        # Ubuntu 22.04+ 的 chromium-browser 是 snap 过渡包，尝试直接安装 chromium
+        if apt-cache show chromium 2>/dev/null | grep -q "^Package: chromium$"; then
+            pkg_name="chromium"
+        else
+            pkg_name="chromium-browser"
+        fi
+    fi
+
+    safe_exec "安装 Chromium" apt-get install -y "$pkg_name" || return 1
+
+    mark_component_installed "browser_chromium" "$pkg_name"
+    success "Chromium 安装完成"
+    return 0
+}
+
+install_browser_midori() {
+    if command -v midori &>/dev/null; then
+        warn "Midori 已安装"
+        if [[ "$INTERACTIVE" == "true" ]]; then
+            if ! confirm "是否重新安装?" "n"; then
+                return 0
+            fi
+        fi
+    fi
+
+    info "安装 Midori..."
+    apt-get update -qq
+    safe_exec "安装 Midori" apt-get install -y midori || return 1
+
+    mark_component_installed "browser_midori" "midori"
+    success "Midori 安装完成"
+    return 0
+}
+
+install_browser() {
+    local browser_type="${1:-}"
+
+    # 如果没有指定类型，进入交互选择
+    if [[ -z "$browser_type" && "$INTERACTIVE" == "true" ]]; then
+        detect_browser_recommendation
+
+        while true; do
+            echo ""
+            echo -e "${BOLD}  请选择要安装的浏览器:${NC}"
+            echo ""
+            echo "    1) Firefox ESR（稳定版，推荐）"
+            echo "    2) Chromium（性能好，资源占用较高）"
+            echo "    3) Midori（极轻量，WebKit 内核）"
+            echo "    0) 返回上一级"
+            echo ""
+            read -r -p "  选择 [1]: " browser_choice
+            browser_choice="${browser_choice:-1}"
+
+            case "$browser_choice" in
+                0) return 0 ;;
+                2) install_browser_chromium; return $? ;;
+                3) install_browser_midori; return $? ;;
+                *) install_browser_firefox_esr; return $? ;;
+            esac
+        done
+    fi
+
+    # 直接安装指定类型
+    case "$browser_type" in
+        firefox|firefox-esr|esr)
+            install_browser_firefox_esr
+            ;;
+        chromium|chrome)
+            install_browser_chromium
+            ;;
+        midori|light)
+            install_browser_midori
+            ;;
+        *)
+            error "未知浏览器类型: $browser_type"
+            echo "支持的类型: firefox-esr, chromium, midori"
+            return 1
+            ;;
+    esac
+}
+
 # --- 2.9 防火墙配置 ---
 
 configure_firewall() {
@@ -1822,6 +2005,7 @@ INITEOF
     local do_wine=""
     local do_input_method=false
     local do_bottles=false
+    local do_browser=""
 
     # 解析 CLI 参数或交互选择
     if [[ $# -gt 0 ]]; then
@@ -1835,6 +2019,9 @@ INITEOF
                 --wine=*)        do_wine="full" ;;
                 --input-method)  do_input_method=true ;;
                 --bottles)       do_bottles=true ;;
+                --browser=firefox-esr) do_browser="firefox-esr" ;;
+                --browser=chromium)    do_browser="chromium" ;;
+                --browser=midori)      do_browser="midori" ;;
                 --desktop=xfce4) DESKTOP_CHOICE="xfce4" ;;
                 --desktop=lxqt)  DESKTOP_CHOICE="lxqt" ;;
                 --desktop=mate)  DESKTOP_CHOICE="mate" ;;
@@ -1871,6 +2058,7 @@ INITEOF
             echo -e "  ${GREEN}7)${NC} Wine 完整版（含 winetricks）"
             echo -e "  ${GREEN}8)${NC} Fcitx5 中文输入法"
             echo -e "  ${GREEN}9)${NC} Bottles（图形化 Wine 管理）"
+            echo -e "  ${GREEN}10)${NC} 浏览器（安装后选择类型）"
             echo ""
 
             local default_hint="1,4"
@@ -1885,6 +2073,7 @@ INITEOF
             do_wine=""
             do_input_method=false
             do_bottles=false
+            do_browser=""
 
             IFS=',' read -ra install_arr <<< "$install_str"
             for s in "${install_arr[@]}"; do
@@ -1899,12 +2088,13 @@ INITEOF
                     7) do_wine="full" ;;
                     8) do_input_method=true ;;
                     9) do_bottles=true ;;
+                    10) do_browser="select" ;;
                     *) warn "忽略无效编号: $s" ;;
                 esac
             done
 
             # 校验
-            if [[ "$do_xrdp" != "true" && "$do_vnc" != "true" && "$do_desktop" != "true" && -z "$do_wine" && "$do_input_method" != "true" && "$do_bottles" != "true" ]]; then
+            if [[ "$do_xrdp" != "true" && "$do_vnc" != "true" && "$do_desktop" != "true" && -z "$do_wine" && "$do_input_method" != "true" && "$do_bottles" != "true" && -z "$do_browser" ]]; then
                 warn "至少需要选择一个组件"
                 continue
             fi
@@ -1972,6 +2162,15 @@ INITEOF
     # Bottles
     if [[ "$do_bottles" == "true" && "$failed" != "true" ]]; then
         install_bottles || warn "Bottles 安装失败，但不影响整体"
+    fi
+
+    # 浏览器
+    if [[ -n "$do_browser" && "$failed" != "true" ]]; then
+        if [[ "$do_browser" == "select" && "$INTERACTIVE" == "true" ]]; then
+            install_browser || warn "浏览器安装失败，但不影响整体"
+        elif [[ "$do_browser" != "select" ]]; then
+            install_browser "$do_browser" || warn "浏览器安装失败，但不影响整体"
+        fi
     fi
 
     # 5. 防火墙
@@ -2557,14 +2756,14 @@ uninstall_component() {
     if [[ "$component" == "all" ]]; then
         echo ""
         echo -e "${RED}警告: 即将卸载所有远程桌面组件！${NC}"
-        echo "包括: 桌面环境、XRDP、VNC、Wine、输入法、Bottles"
+        echo "包括: 桌面环境、XRDP、VNC、Wine、输入法、Bottles、浏览器"
         echo ""
         if ! confirm "确认卸载全部?" "n"; then
             info "已取消"
             return 1
         fi
 
-        for comp in bottles wine input_method vnc xrdp locale desktop; do
+        for comp in bottles browser wine input_method vnc xrdp locale desktop; do
             _uninstall_single "$comp"
         done
 
@@ -2724,6 +2923,12 @@ _uninstall_single() {
             warn "locale 数据未移除（系统级组件，可能被其他应用依赖）"
             ;;
 
+        browser)
+            apt-get purge -y firefox-esr chromium chromium-browser midori 2>/dev/null || true
+            rm -f /usr/share/applications/firefox-esr.desktop
+            info "浏览器已卸载"
+            ;;
+
         *)
             warn "未知组件: $component"
             return 1
@@ -2749,8 +2954,9 @@ uninstall_menu() {
         echo "  4) 卸载 XRDP"
         echo "  5) 卸载桌面环境"
         echo "  6) 卸载 Bottles"
-        echo "  7) 一键卸载全部"
-        echo "  8) 返回"
+        echo "  7) 卸载浏览器"
+        echo "  8) 一键卸载全部"
+        echo "  9) 返回"
         echo ""
 
         local components
@@ -2771,8 +2977,9 @@ uninstall_menu() {
             4) uninstall_component "xrdp"; pause ;;
             5) uninstall_component "desktop"; pause ;;
             6) uninstall_component "bottles"; pause ;;
-            7) uninstall_component "all"; pause ;;
-            8) return 0 ;;
+            7) uninstall_component "browser"; pause ;;
+            8) uninstall_component "all"; pause ;;
+            9) return 0 ;;
             *) echo "无效选择" ;;
         esac
     done
@@ -2799,6 +3006,7 @@ show_main_menu() {
         echo "  6) 状态诊断"
         echo "  7) 模块化卸载"
         echo "  8) 查看操作日志"
+        echo "  9) 安装浏览器"
         echo "  0) 退出"
         echo ""
         read -r -p "选择操作: " choice
@@ -2939,6 +3147,7 @@ show_main_menu() {
                 echo ""
                 pause
                 ;;
+            9) install_browser; pause ;;
             0) echo "再见"; exit 0 ;;
             *) echo "无效选择"; pause ;;
         esac
@@ -2994,6 +3203,10 @@ parse_cli_args() {
             uninstall_component "$component"
             ;;
 
+        browser)
+            install_browser "${1:-}"
+            ;;
+
         swap)
             swap_manage
             ;;
@@ -3040,6 +3253,7 @@ show_help() {
       --bottles           安装 Bottles（Wine GUI 管理器）
       --desktop=xfce4     选择桌面: xfce4 / lxqt / mate
       --input-method      安装中文输入法
+      --browser=firefox-esr  安装浏览器 (firefox-esr / chromium / midori)
       --desktop-only      仅安装桌面环境
 
   user add [用户名]       添加用户
@@ -3057,7 +3271,7 @@ show_help() {
   status                  系统诊断
 
   uninstall <组件>        卸载组件
-    组件: xrdp, vnc, desktop, wine, input_method, bottles, all
+    组件: xrdp, vnc, desktop, wine, input_method, bottles, browser, all
 
   menu                    进入交互菜单（默认）
   --help                  显示帮助
