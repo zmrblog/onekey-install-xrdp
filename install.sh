@@ -997,32 +997,9 @@ fnos_pre_install_fix() {
         # 先处理触发器
         dpkg --triggers-only --pending &>/dev/null || true
 
-        # 临时禁用 update-initramfs（飞牛的 initramfs 更新经常因 /boot 问题崩溃）
-        local initramfs_backed_up=false
-        if [[ -x /usr/sbin/update-initramfs ]] && ! head -2 /usr/sbin/update-initramfs | grep -q "临时禁用"; then
-            cp /usr/sbin/update-initramfs /usr/sbin/update-initramfs.rdp-backup
-            cat > /usr/sbin/update-initramfs << 'INITEOF'
-#!/bin/bash
-# [rdp-setup 临时禁用] 飞牛 NAS 的 initramfs 更新可能导致 dpkg 崩溃
-# 安装完成后会自动恢复
-echo "[rdp-setup] update-initramfs 已临时跳过" >&2
-exit 0
-INITEOF
-            chmod +x /usr/sbin/update-initramfs
-            initramfs_backed_up=true
-            info "已临时禁用 update-initramfs（安装完成后自动恢复）"
-        fi
-
-        # 执行配置修复
+        # 执行配置修复（initramfs 保护由外层 do_install 负责，此处不再处理）
         dpkg --configure -a &>/dev/null || true
         apt-get install -f -y &>/dev/null || true
-
-        # 恢复 update-initramfs
-        if [[ "$initramfs_backed_up" == "true" ]] && [[ -f /usr/sbin/update-initramfs.rdp-backup ]]; then
-            cp /usr/sbin/update-initramfs.rdp-backup /usr/sbin/update-initramfs
-            rm -f /usr/sbin/update-initramfs.rdp-backup
-            success "update-initramfs 已恢复"
-        fi
 
         # 验证修复结果
         local remaining
@@ -1760,8 +1737,24 @@ install_all() {
     # 此项不影响 XRDP/VNC/Wine 等非桌面组件，但放在此处在所有安装之前更安全
     check_trim_avahi_conflict || warn "trim avahi 冲突处理失败，继续尝试安装..."
 
-    # 2.6 飞牛 NAS 安装前修复（dpkg 半配置包、liveupdate 清理、initramfs 保护）
+    # 2.6 飞牛 NAS 安装前修复（dpkg 半配置包、liveupdate 清理）
     fnos_pre_install_fix
+
+    # 2.7 飞牛 NAS 临时禁用 update-initramfs（安装全过程中保护，安装后恢复）
+    local _initramfs_backed_up=false
+    if [[ "$IS_FNOS" == "true" ]] && [[ -x /usr/sbin/update-initramfs ]] && ! head -2 /usr/sbin/update-initramfs | grep -q "rdp-setup"; then
+        cp /usr/sbin/update-initramfs /usr/sbin/update-initramfs.rdp-backup
+        cat > /usr/sbin/update-initramfs << 'INITEOF'
+#!/bin/bash
+# [rdp-setup 临时禁用] 飞牛 NAS 的 initramfs 更新可能导致 dpkg 崩溃
+# 安装完成后会自动恢复
+echo "[rdp-setup] update-initramfs 已临时跳过" >&2
+exit 0
+INITEOF
+        chmod +x /usr/sbin/update-initramfs
+        _initramfs_backed_up=true
+        info "已临时禁用 update-initramfs（安装完成后自动恢复）"
+    fi
 
     # 3. 解析组件选择
     local do_desktop=true
@@ -1931,6 +1924,12 @@ install_all() {
     hr
 
     if [[ "$failed" == "true" ]]; then
+        # 安装失败时也恢复 initramfs
+        if [[ "$_initramfs_backed_up" == "true" ]] && [[ -f /usr/sbin/update-initramfs.rdp-backup ]]; then
+            cp /usr/sbin/update-initramfs.rdp-backup /usr/sbin/update-initramfs
+            rm -f /usr/sbin/update-initramfs.rdp-backup
+            info "update-initramfs 已恢复（安装失败退出）"
+        fi
         write_state "status" "partial_failed"
         error "安装过程中出现错误，部分组件可能未正确安装"
         echo "请查看日志: $LOG_FILE"
@@ -1940,6 +1939,13 @@ install_all() {
     write_state "status" "installed"
     success "远程桌面安装完成！"
     echo ""
+
+    # 飞牛 NAS 恢复 update-initramfs（安装全过程中禁用，现在恢复）
+    if [[ "$_initramfs_backed_up" == "true" ]] && [[ -f /usr/sbin/update-initramfs.rdp-backup ]]; then
+        cp /usr/sbin/update-initramfs.rdp-backup /usr/sbin/update-initramfs
+        rm -f /usr/sbin/update-initramfs.rdp-backup
+        success "update-initramfs 已恢复"
+    fi
 
     # 飞牛 NAS 安装后保护（ufw 端口保护 + trim 更新看门狗）
     fnos_post_install_protect
