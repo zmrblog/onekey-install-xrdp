@@ -2748,70 +2748,122 @@ show_main_menu() {
             1) install_all ;;
             2) user_management ;;
             3)
-                echo "  选择服务:"
-                echo "    1) XRDP 服务"
-                echo "    2) XRDP Sesman 服务"
-                read -r -p "选择 [1]: " svc_choice
-                svc_choice="${svc_choice:-1}"
-                local svc_name=""
-                case "$svc_choice" in
-                    2) svc_name="xrdp-sesman" ;;
-                    *) svc_name="xrdp" ;;
-                esac
-                echo "  选择操作:"
-                echo "    1) 启动  2) 停止  3) 重启  4) 查看状态  5) 开机自启  6) 禁用自启"
-                read -r -p "选择 [3]: " act_choice
-                act_choice="${act_choice:-3}"
-                local act_name=""
-                case "$act_choice" in
-                    1) act_name="start" ;;
-                    2) act_name="stop" ;;
-                    3) act_name="restart" ;;
-                    4) act_name="status" ;;
-                    5) act_name="enable" ;;
-                    6) act_name="disable" ;;
-                    *) act_name="restart" ;;
-                esac
-                service_control "$svc_name" "$act_name"
+                while true; do
+                    echo ""
+                    echo "  选择服务:"
+                    echo "    1) XRDP 服务"
+                    echo "    2) XRDP Sesman 服务"
+                    echo "    0) 返回上一级"
+                    read -r -p "选择 [1]: " svc_choice
+                    svc_choice="${svc_choice:-1}"
+                    
+                    if [[ "$svc_choice" == "0" ]]; then
+                        break
+                    fi
+                    
+                    local svc_name=""
+                    case "$svc_choice" in
+                        2) svc_name="xrdp-sesman" ;;
+                        *) svc_name="xrdp" ;;
+                    esac
+                    
+                    while true; do
+                        echo ""
+                        echo "  选择操作:"
+                        echo "    1) 启动  2) 停止  3) 重启  4) 查看状态  5) 开机自启  6) 禁用自启"
+                        echo "    0) 返回上一级"
+                        read -r -p "选择 [3]: " act_choice
+                        act_choice="${act_choice:-3}"
+                        
+                        if [[ "$act_choice" == "0" ]]; then
+                            break
+                        fi
+                        
+                        local act_name=""
+                        case "$act_choice" in
+                            1) act_name="start" ;;
+                            2) act_name="stop" ;;
+                            3) act_name="restart" ;;
+                            4) act_name="status" ;;
+                            5) act_name="enable" ;;
+                            6) act_name="disable" ;;
+                            *) act_name="restart" ;;
+                        esac
+                        service_control "$svc_name" "$act_name"
+                        pause
+                    done
+                done
                 pause
                 ;;
             4)
-                echo "  1) 开放远程桌面端口（允许外部连接）"
-                echo "  2) 关闭远程桌面端口（禁止外部连接）"
-                read -r -p "选择 [1]: " fw_choice
-                case "$fw_choice" in
-                    2) configure_firewall "close" ;;
-                    *) configure_firewall "open" ;;
-                esac
+                while true; do
+                    echo ""
+                    echo "  防火墙配置:"
+                    echo "    1) 开放远程桌面端口（允许外部连接）"
+                    echo "    2) 关闭远程桌面端口（禁止外部连接）"
+                    echo "    0) 返回上一级"
+                    read -r -p "选择 [1]: " fw_choice
+                    
+                    if [[ "$fw_choice" == "0" ]]; then
+                        break
+                    fi
+                    
+                    case "$fw_choice" in
+                        2) configure_firewall "close" ;;
+                        *) configure_firewall "open" ;;
+                    esac
+                    pause
+                done
                 pause
                 ;;
             5)
-                echo "  1) 调整分辨率  2) 修改端口  3) Swap 管理"
-                read -r -p "选择: " sub
-                case "$sub" in
-                    1)
-                        echo "  常用分辨率:"
-                        echo "    1) 1280x720  (720p)"
-                        echo "    2) 1920x1080 (1080p)"
-                        echo "    3) 2560x1440 (2K)"
-                        echo "    4) 自定义"
-                        read -r -p "选择 [2]: " res_choice
-                        res_choice="${res_choice:-2}"
-                        case "$res_choice" in
-                            1) set_resolution 1280 720 24 ;;
-                            2) set_resolution 1920 1080 24 ;;
-                            3) set_resolution 2560 1440 24 ;;
-                            4)
-                                read -r -p "宽度 (如 1920): " w
-                                read -r -p "高度 (如 1080): " h
-                                set_resolution "${w:-1920}" "${h:-1080}" 24
-                                ;;
-                            *) set_resolution 1920 1080 24 ;;
-                        esac
-                        ;;
-                    2) set_port ;;
-                    3) swap_manage ;;
-                esac
+                while true; do
+                    echo ""
+                    echo "  系统配置:"
+                    echo "    1) 调整分辨率  2) 修改端口  3) Swap 管理"
+                    echo "    0) 返回上一级"
+                    read -r -p "选择: " sub
+                    
+                    if [[ "$sub" == "0" ]]; then
+                        break
+                    fi
+                    
+                    case "$sub" in
+                        1)
+                            while true; do
+                                echo ""
+                                echo "  常用分辨率:"
+                                echo "    1) 1280x720  (720p)"
+                                echo "    2) 1920x1080 (1080p)"
+                                echo "    3) 2560x1440 (2K)"
+                                echo "    4) 自定义"
+                                echo "    0) 返回上一级"
+                                read -r -p "选择 [2]: " res_choice
+                                res_choice="${res_choice:-2}"
+                                
+                                if [[ "$res_choice" == "0" ]]; then
+                                    break
+                                fi
+                                
+                                case "$res_choice" in
+                                    1) set_resolution 1280 720 24 ;;
+                                    2) set_resolution 1920 1080 24 ;;
+                                    3) set_resolution 2560 1440 24 ;;
+                                    4)
+                                        read -r -p "宽度 (如 1920): " w
+                                        read -r -p "高度 (如 1080): " h
+                                        set_resolution "${w:-1920}" "${h:-1080}" 24
+                                        ;;
+                                    *) set_resolution 1920 1080 24 ;;
+                                esac
+                                pause
+                            done
+                            ;;
+                        2) set_port; pause ;;
+                        3) swap_manage; pause ;;
+                        *) echo "无效选择"; pause ;;
+                    esac
+                done
                 pause
                 ;;
             6) run_diagnostic; pause ;;
