@@ -1724,7 +1724,8 @@ show_firewall_status() {
     else
         echo -e "${CYAN}[UFW 防火墙状态]${NC}"
         local status
-        status="$(ufw status 2>/dev/null)"
+        # 去除 ANSI 转义码，避免输出乱码
+        status="$(ufw status 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
         if [[ "$status" =~ "Status: active" ]]; then
             echo "  状态: ${GREEN}已启用${NC}"
         elif [[ "$status" =~ "Status: inactive" ]]; then
@@ -1735,23 +1736,18 @@ show_firewall_status() {
         echo ""
 
         echo -e "${CYAN}[UFW 规则列表]${NC}"
-        if [[ -n "$status" ]]; then
-            echo "$status" | grep -v "^Status:" | grep -v "^$" | while read -r rule; do
-                if [[ -n "$rule" ]]; then
-                    echo "  $rule"
-                fi
-            done
-        else
-            echo "  无法获取规则列表"
-        fi
+        # 显示原始 ufw 状态，去除状态行和 ANSI 颜色代码
+        ufw status verbose 2>/dev/null | grep -v "^Status:" | grep -v "^$" | sed 's/\x1b\[[0-9;]*m//g' | while read -r rule; do
+            echo "  $rule"
+        done
     fi
 
     echo ""
     echo -e "${CYAN}[监听端口]${NC}"
     if command -v ss &>/dev/null; then
-        ss -tlnp 2>/dev/null | grep -v '127.0.0.1' | grep -v '::1' | awk '{print "  " $5 " - " $7}'
+        ss -tlnp 2>/dev/null | grep -v '127.0.0.1' | grep -v '::1' | sed 's/\x1b\[[0-9;]*m//g' | awk '{print "  " $5 " - " $7}'
     elif command -v netstat &>/dev/null; then
-        netstat -tlnp 2>/dev/null | grep -v '127.0.0.1' | grep -v '::1' | awk '{print "  " $4 " - " $7}'
+        netstat -tlnp 2>/dev/null | grep -v '127.0.0.1' | grep -v '::1' | sed 's/\x1b\[[0-9;]*m//g' | awk '{print "  " $4 " - " $7}'
     else
         echo "  无法获取监听端口信息"
     fi
@@ -2498,7 +2494,7 @@ run_diagnostic() {
         if has_systemd; then
             systemctl is-active xrdp 2>/dev/null && echo "  状态: ${GREEN}运行中${NC}" || echo "  状态: ${RED}已停止${NC}"
         else
-            service xrdp status 2>/dev/null | head -2
+            service xrdp status 2>/dev/null | head -2 | sed 's/\x1b\[[0-9;]*m//g'
         fi
     else
         echo "  ${RED}未安装${NC}"
