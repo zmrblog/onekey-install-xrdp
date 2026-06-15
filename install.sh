@@ -1868,6 +1868,7 @@ install_browser() {
 
 configure_firewall() {
     local action="${1:-open}"
+    local custom_port="${2:-}"
 
     if ! command -v ufw &>/dev/null; then
         info "UFW 未安装，正在安装..."
@@ -1895,6 +1896,45 @@ configure_firewall() {
             ufw delete allow "$port"/tcp 2>/dev/null || true
             ufw delete allow 5900:5910/tcp 2>/dev/null || true
             success "防火墙已配置: 关闭远程桌面端口"
+            ;;
+        custom_open)
+            if [[ -z "$custom_port" ]]; then
+                read -r -p "请输入要开放的端口（单个如 8080，区间如 8000:8010）: " custom_port
+            fi
+            if [[ -z "$custom_port" ]]; then
+                warn "未输入端口，取消操作"
+                return 1
+            fi
+            # 验证端口格式: 单个数字 或 数字:数字
+            if ! [[ "$custom_port" =~ ^[0-9]+(:[0-9]+)?$ ]]; then
+                error "无效的端口格式: $custom_port"
+                echo "支持的格式: 8080 或 8000:8010"
+                return 1
+            fi
+            ufw allow "$custom_port"/tcp 2>/dev/null || true
+            if ! ufw status 2>/dev/null | grep -q 'Status: active'; then
+                info "启用 UFW 防火墙..."
+                ufw --force enable 2>/dev/null || true
+            fi
+            ufw reload 2>/dev/null || true
+            success "防火墙已配置: 开放端口 $custom_port/tcp"
+            ;;
+        custom_close)
+            if [[ -z "$custom_port" ]]; then
+                read -r -p "请输入要关闭的端口（单个如 8080，区间如 8000:8010）: " custom_port
+            fi
+            if [[ -z "$custom_port" ]]; then
+                warn "未输入端口，取消操作"
+                return 1
+            fi
+            if ! [[ "$custom_port" =~ ^[0-9]+(:[0-9]+)?$ ]]; then
+                error "无效的端口格式: $custom_port"
+                echo "支持的格式: 8080 或 8000:8010"
+                return 1
+            fi
+            ufw delete allow "$custom_port"/tcp 2>/dev/null || true
+            ufw reload 2>/dev/null || true
+            success "防火墙已配置: 关闭端口 $custom_port/tcp"
             ;;
     esac
 }
@@ -3083,6 +3123,8 @@ show_main_menu() {
                     echo "    1) 开放远程桌面端口（允许外部连接）"
                     echo "    2) 关闭远程桌面端口（禁止外部连接）"
                     echo "    3) 查看防火墙状态和开放端口"
+                    echo "    4) 开放自定义端口"
+                    echo "    5) 关闭自定义端口"
                     echo "    0) 返回上一级"
                     read -r -p "选择 [1]: " fw_choice
                     
@@ -3093,6 +3135,8 @@ show_main_menu() {
                     case "$fw_choice" in
                         2) configure_firewall "close"; pause ;;
                         3) show_firewall_status; pause ;;
+                        4) configure_firewall "custom_open"; pause ;;
+                        5) configure_firewall "custom_close"; pause ;;
                         *) configure_firewall "open"; pause ;;
                     esac
                 done
